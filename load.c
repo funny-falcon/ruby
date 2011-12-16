@@ -185,7 +185,7 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 	}
     }
     loading_tbl = get_loading_table();
-    if (loading_tbl) {
+    if (loading_tbl && loading_tbl->num_entries > 0) {
 	f = 0;
 	if (!expanded) {
 	    struct loaded_feature_searching fs;
