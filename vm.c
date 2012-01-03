@@ -2194,12 +2194,31 @@ rb_vm_set_progname(VALUE filename)
 struct rb_objspace *rb_objspace_alloc(void);
 #endif
 
+#define POOL_ALLOC
+#ifdef POOL_ALLOC
+#define POOL_ONLY_DATA 1
+#include "pool_alloc.inc.h"
+extern pool_holder bigger_holder;
+#endif
+
 void
 Init_BareVM(void)
 {
     /* VM bootstrap: phase 1 */
+#ifdef POOL_ALLOC
+    rb_vm_t * vm;
+    rb_thread_t * th;
+    pool_entry_list *p = malloc(sizeof(*th) + ENTRY_DATA_OFFSET);
+    p->holder = &bigger_holder;
+    th = ENTRY2VOID(p);
+    p = malloc(sizeof(*vm) + ENTRY_DATA_OFFSET);
+    p->holder = &bigger_holder;
+    vm = ENTRY2VOID(p);
+#else
     rb_vm_t * vm = malloc(sizeof(*vm));
     rb_thread_t * th = malloc(sizeof(*th));
+#endif
+    
     if (!vm || !th) {
 	fprintf(stderr, "[FATAL] failed to allocate memory\n");
 	exit(EXIT_FAILURE);

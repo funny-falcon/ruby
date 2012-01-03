@@ -492,7 +492,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	struct gc_list *list, *next;
 	for (list = global_List; list; list = next) {
 	    next = list->next;
-	    free(list);
+	    xfree(list);
 	}
     }
     if (objspace->heap.sorted) {
@@ -733,8 +733,6 @@ garbage_collect_with_gvl(rb_objspace_t *objspace)
     }
 }
 
-static void vm_xfree(rb_objspace_t *objspace, void *ptr);
-
 static inline size_t
 vm_malloc_prepare(rb_objspace_t *objspace, size_t size)
 {
@@ -779,7 +777,7 @@ vm_malloc_fixup(rb_objspace_t *objspace, void *mem, size_t size)
     } while (0)
 
 static void *
-vm_xmalloc(rb_objspace_t *objspace, size_t size)
+vm_xmalloc_base(rb_objspace_t *objspace, size_t size)
 {
     void *mem;
 
@@ -788,50 +786,8 @@ vm_xmalloc(rb_objspace_t *objspace, size_t size)
     return vm_malloc_fixup(objspace, mem, size);
 }
 
-static void *
-vm_xrealloc(rb_objspace_t *objspace, void *ptr, size_t size)
-{
-    void *mem;
-
-    if ((ssize_t)size < 0) {
-	negative_size_allocation_error("negative re-allocation size");
-    }
-    if (!ptr) return vm_xmalloc(objspace, size);
-    if (size == 0) {
-	vm_xfree(objspace, ptr);
-	return 0;
-    }
-    if (ruby_gc_stress && !ruby_disable_gc_stress)
-	garbage_collect_with_gvl(objspace);
-
-#if CALC_EXACT_MALLOC_SIZE
-    size += sizeof(size_t);
-    objspace->malloc_params.allocated_size -= size;
-    ptr = (size_t *)ptr - 1;
-#endif
-
-    mem = realloc(ptr, size);
-    if (!mem) {
-	if (garbage_collect_with_gvl(objspace)) {
-	    mem = realloc(ptr, size);
-	}
-	if (!mem) {
-	    ruby_memerror();
-        }
-    }
-    malloc_increase += size;
-
-#if CALC_EXACT_MALLOC_SIZE
-    objspace->malloc_params.allocated_size += size;
-    ((size_t *)mem)[0] = size;
-    mem = (size_t *)mem + 1;
-#endif
-
-    return mem;
-}
-
 static void
-vm_xfree(rb_objspace_t *objspace, void *ptr)
+vm_xfree_base(rb_objspace_t *objspace, void *ptr)
 {
 #if CALC_EXACT_MALLOC_SIZE
     size_t size;
@@ -844,10 +800,38 @@ vm_xfree(rb_objspace_t *objspace, void *ptr)
     free(ptr);
 }
 
-void *
-ruby_xmalloc(size_t size)
+static void *
+vm_xrealloc_base(rb_objspace_t *objspace, void *ptr, size_t size)
 {
-    return vm_xmalloc(&rb_objspace, size);
+    void *mem;
+
+    if ((ssize_t)size < 0) {
+	negative_size_allocation_error("negative re-allocation size");
+    }
+    if (!ptr) return vm_xmalloc_base(objspace, size);
+    if (size == 0) {
+	vm_xfree_base(objspace, ptr);
+	return 0;
+    }
+    if (ruby_gc_stress && !ruby_disable_gc_stress)
+	garbage_collect_with_gvl(objspace);
+
+#if CALC_EXACT_MALLOC_SIZE
+    size += sizeof(size_t);
+    objspace->malloc_params.allocated_size -= size;
+    ptr = (size_t *)ptr - 1;
+#endif
+
+    TRY_WITH_GC(mem = realloc(ptr, size));
+    malloc_increase += size;
+
+#if CALC_EXACT_MALLOC_SIZE
+    objspace->malloc_params.allocated_size += size;
+    ((size_t *)mem)[0] = size;
+    mem = (size_t *)mem + 1;
+#endif
+
+    return mem;
 }
 
 static inline size_t
@@ -860,14 +844,8 @@ xmalloc2_size(size_t n, size_t size)
     return len;
 }
 
-void *
-ruby_xmalloc2(size_t n, size_t size)
-{
-    return vm_xmalloc(&rb_objspace, xmalloc2_size(n, size));
-}
-
 static void *
-vm_xcalloc(rb_objspace_t *objspace, size_t count, size_t elsize)
+vm_xcalloc_base(rb_objspace_t *objspace, size_t count, size_t elsize)
 {
     void *mem;
     size_t size;
@@ -877,6 +855,138 @@ vm_xcalloc(rb_objspace_t *objspace, size_t count, size_t elsize)
 
     TRY_WITH_GC(mem = calloc(1, size));
     return vm_malloc_fixup(objspace, mem, size);
+}
+
+#define POOL_ALLOC
+#ifdef POOL_ALLOC
+#include "pool_alloc.inc.h"
+typedef void *voidp;
+#define VOID_POOL(i) \
+    typedef voidp void##i [i]; \
+    static pool_free_pointer void##i##_pool = INIT_POOL( void##i )
+VOID_POOL(2);
+VOID_POOL(4);
+VOID_POOL(6);
+VOID_POOL(8);
+VOID_POOL(12);
+VOID_POOL(16);
+VOID_POOL(20);
+pool_holder bigger_holder = {0, 0, 22, NULL, {0}};
+
+static inline pool_free_pointer *
+get_pool_by_size(size_t size)
+{
+#define IF_POOL(i) size < sizeof( void##i ) ? &void##i##_pool
+    return 
+	IF_POOL(2) :
+	IF_POOL(4) :
+	IF_POOL(6) :
+	IF_POOL(8) :
+	IF_POOL(12) :
+	IF_POOL(16) :
+	IF_POOL(20) :
+	NULL;
+}
+
+static inline pool_entry_list *
+entry4pool(rb_objspace_t *objspace, pool_free_pointer *pool, size_t size)
+{
+    if (pool)
+	return pool_alloc_entry(pool);
+    else {
+	pool_entry_list *entry =
+	    (pool_entry_list*)vm_xmalloc_base(objspace, size + ENTRY_DATA_OFFSET);
+	entry->holder = &bigger_holder;
+	return entry;
+    }
+}
+
+static void *
+vm_xmalloc(rb_objspace_t *objspace, size_t size)
+{
+    pool_free_pointer *pool = get_pool_by_size(size);
+//    printf("malloc %d\n", pool ? pool->size : 22);
+    return ENTRY2VOID(entry4pool(objspace, pool, size));
+}
+
+static void
+vm_xfree(rb_objspace_t *objspace, void *ptr)
+{
+    pool_entry_list *entry = VOID2ENTRY(ptr);
+//   printf("free %d\n", entry->holder->size);
+    if (entry->holder != &bigger_holder)
+	pool_free_entry(entry);
+    else
+	vm_xfree_base(objspace, entry);
+}
+
+static void *
+vm_xrealloc(rb_objspace_t *objspace, void *ptr, size_t size)
+{
+    pool_entry_list *entry = VOID2ENTRY(ptr);
+    pool_free_pointer *old_pool = entry->holder->free_pointer;
+    pool_free_pointer *new_pool = get_pool_by_size(size);
+   // printf("realloc %d %d\n", old_pool ? old_pool->size : 22,
+//	    new_pool ? new_pool->size : 22);
+    if (old_pool == new_pool) {
+	if (old_pool)
+	    return ptr;
+	else
+	    return ENTRY2VOID(vm_xrealloc_base(objspace, entry, size + ENTRY_DATA_OFFSET));
+    }
+    else {
+	pool_entry_list *new_entry = entry4pool(objspace, new_pool, size);
+	size_t size2copy = entry->holder->size * sizeof(void*) - ENTRY_DATA_OFFSET;
+	if (size < size2copy) { size2copy = size; }
+	memcpy(ENTRY2VOID(new_entry), ptr, size2copy);
+	if (old_pool)
+	    pool_free_entry(entry);
+	else
+	    vm_xfree_base(objspace, entry);
+	return ENTRY2VOID(new_entry);
+    }
+}
+
+static void *
+vm_xcalloc(rb_objspace_t *objspace, size_t count, size_t elsize)
+{
+    size_t size = xmalloc2_size(count, elsize);
+    pool_free_pointer *pool = get_pool_by_size(size);
+//    printf("calloc %d\n", pool ? pool->size : 22);
+
+    if (pool) {
+	pool_entry_list *entry = pool_alloc_entry(pool);
+	memset(ENTRY2VOID(entry), 0, size);
+	return ENTRY2VOID(entry);
+    }
+    else {
+	void *mem;
+	size = vm_malloc_prepare(objspace, size + ENTRY_DATA_OFFSET);
+	TRY_WITH_GC(mem = calloc(1, size));
+	mem = vm_malloc_fixup(objspace, mem, size);
+	ENTRY(mem)->holder = &bigger_holder;
+	return ENTRY2VOID(mem);
+    }
+}
+#else
+
+#define vm_xmalloc vm_xmalloc_base
+#define vm_xrealloc vm_xrealloc_base
+#define vm_xfree vm_xfree_base
+#define vm_xcalloc vm_xcalloc_base
+
+#endif
+
+void *
+ruby_xmalloc(size_t size)
+{
+    return vm_xmalloc(&rb_objspace, size);
+}
+
+void *
+ruby_xmalloc2(size_t n, size_t size)
+{
+    return vm_xmalloc(&rb_objspace, xmalloc2_size(n, size));
 }
 
 void *

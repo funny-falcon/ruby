@@ -51,7 +51,7 @@ void *xcalloc();
 void *xrealloc();
 #endif
 
-#define free(x) xfree(x)
+//#define free(x) xfree(x)
 
 #include <stdio.h>
 #if defined(_WIN32)

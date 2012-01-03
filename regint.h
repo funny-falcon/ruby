@@ -84,10 +84,10 @@
 /* escape other system UChar definition */
 #ifndef RUBY_DEFINES_H
 #include "ruby/ruby.h"
-#undef xmalloc
+/*#undef xmalloc
 #undef xrealloc
 #undef xcalloc
-#undef xfree
+#undef xfree*/
 #endif
 #ifdef ONIG_ESCAPE_UCHAR_COLLISION
 #undef ONIG_ESCAPE_UCHAR_COLLISION
