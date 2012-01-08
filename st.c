@@ -419,11 +419,11 @@ st_get_key(st_table *table, register st_data_t key, st_data_t *result)
 #undef collision_check
 #define collision_check 1
 
-static void
+static inline void
 add_direct(st_table * table, st_data_t key, st_data_t value,
-	st_index_t hash_val, st_index_t bin_pos)
+	st_index_t hash_val, register st_index_t bin_pos)
 {
-    st_table_entry *entry;
+    register st_table_entry *entry;
     if (table->num_entries > ST_DEFAULT_MAX_DENSITY * table->num_bins) {
 	rehash(table);
         bin_pos = hash_val % table->num_bins;
@@ -431,10 +431,11 @@ add_direct(st_table * table, st_data_t key, st_data_t value,
 
     entry = st_alloc_entry();
 
+    entry->next = table->bins[bin_pos];
+    table->bins[bin_pos] = entry;
     entry->hash = hash_val;
     entry->key = key;
     entry->record = value;
-    entry->next = table->bins[bin_pos];
     if (table->head != 0) {
 	entry->fore = 0;
 	(entry->back = table->tail)->fore = entry;
@@ -444,7 +445,6 @@ add_direct(st_table * table, st_data_t key, st_data_t value,
 	table->head = table->tail = entry;
 	entry->fore = entry->back = 0;
     }
-    table->bins[bin_pos] = entry;
     table->num_entries++;
 }
 
@@ -486,7 +486,8 @@ add_packed_direct(st_table *table, st_data_t key, st_data_t value)
 int
 st_insert(register st_table *table, register st_data_t key, st_data_t value)
 {
-    st_index_t hash_val, bin_pos;
+    st_index_t hash_val;
+    register st_index_t bin_pos;
     register st_table_entry *ptr;
 
     if (table->entries_packed) {
@@ -517,7 +518,8 @@ int
 st_insert2(register st_table *table, register st_data_t key, st_data_t value,
 	   st_data_t (*func)(st_data_t))
 {
-    st_index_t hash_val, bin_pos;
+    st_index_t hash_val;
+    register st_index_t bin_pos;
     register st_table_entry *ptr;
 
     if (table->entries_packed) {
@@ -548,7 +550,7 @@ st_insert2(register st_table *table, register st_data_t key, st_data_t value,
 void
 st_add_direct(st_table *table, st_data_t key, st_data_t value)
 {
-    st_index_t hash_val, bin_pos;
+    st_index_t hash_val;
 
     if (table->entries_packed) {
 	add_packed_direct(table, key, value);
@@ -556,8 +558,7 @@ st_add_direct(st_table *table, st_data_t key, st_data_t value)
     }
 
     hash_val = do_hash(key, table);
-    bin_pos = hash_val % table->num_bins;
-    add_direct(table, key, value, hash_val, bin_pos);
+    add_direct(table, key, value, hash_val, hash_val % table->num_bins);
 }
 
 static void
