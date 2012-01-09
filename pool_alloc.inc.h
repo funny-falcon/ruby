@@ -7,8 +7,7 @@
  * alloc_entry - defired name of function for allocate entry
  */
 
-#ifndef COMMON_POOL_TYPES
-#define COMMON_POOL_TYPES 1
+#if POOL_ALLOC_PART == 1
 
 typedef unsigned int pool_free_counter;
 typedef unsigned int pool_holder_counter;
@@ -38,11 +37,13 @@ struct pool_holder {
     pool_free_pointer  *free_pointer;
     void *data[1];
 };
-#define POOL_DATA_SIZE ((4096 - sizeof(void*) * 3 - offsetof(pool_holder, data))/sizeof(void*))
+#define POOL_DATA_SIZE(pool_size) (((pool_size) - sizeof(void*) * 3 - offsetof(pool_holder, data))/sizeof(void*))
 #define POOL_HOLDER_SIZE (offsetof(pool_holder, data) + pointer->size*pointer->total*sizeof(void*)) 
 #define POOL_ENTRY_SIZE(item_type) (((sizeof(item_type)+ENTRY_DATA_OFFSET-1)/sizeof(void*)+1))
-#define POOL_HOLDER_COUNT(item_type) (POOL_DATA_SIZE/POOL_ENTRY_SIZE(item_type))
-#define INIT_POOL(item_type) {NULL, 0, POOL_ENTRY_SIZE(item_type), POOL_HOLDER_COUNT(item_type)}
+#define POOL_HOLDER_COUNT(pool_size, item_type) (POOL_DATA_SIZE(pool_size)/POOL_ENTRY_SIZE(item_type))
+#define INIT_POOL(pool_size, item_type) {NULL, 0, POOL_ENTRY_SIZE(item_type), POOL_HOLDER_COUNT(pool_size, item_type)}
+
+#elif POOL_ALLOC_PART == 2
 
 static void
 pool_holder_alloc(pool_free_pointer *pointer)

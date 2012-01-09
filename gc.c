@@ -311,6 +311,89 @@ struct gc_list {
 
 #define CALC_EXACT_MALLOC_SIZE 0
 
+#ifdef POOL_ALLOC_API
+/* POOL ALLOC API */
+#define POOL_ALLOC_PART 1
+#include "pool_alloc.inc.h"
+#undef POOL_ALLOC_PART
+
+pool_holder bigger_holder = {0, 0, 38, NULL, {0}};
+typedef void *voidp;
+typedef struct pool_layout_t pool_layout_t;
+struct pool_layout_t {
+    pool_free_pointer
+#if SIZEOF_VOIDP == 4
+      p4,
+      p6,  /* st_table && st_table_entry */
+      p9,
+      p11, /* st_table.bins init size */
+      p16,
+      p19, /* st_table.bins second size */
+      p24,
+      p32, /* str_buf_min_size */
+      p37, /* st_table.bins third size */
+      p48,
+      p65, /* str_buf_min_size * 2 + 1 */
+      p97; /* str_buf_min_size * 3 + 1 */
+#elif SIZEOF_VOIDP == 8
+      p4,
+      p6,  /* st_table && st_table_entry */
+      p9,
+      p11, /* st_table.bins init size */
+      p16, /* str_buf_min_size */
+      p19, /* st_table.bins second size */
+      p24,
+      p33, /* str_buf_min_size * 2 + 1 */
+      p37, /* st_table.bins third size */
+      p49; /* str_buf_min_size * 3 + 1 */
+#endif
+} pool_layout = {
+    INIT_POOL(4096, voidp[4]),
+    INIT_POOL(4096, voidp[6]),
+    INIT_POOL(4096, voidp[9]),
+    INIT_POOL(4096, voidp[11]),
+    INIT_POOL(4096, voidp[16]),
+    INIT_POOL(4096, voidp[19]),
+    INIT_POOL(4096, voidp[24]),
+#if SIZEOF_VOIDP == 4
+    INIT_POOL(4096, voidp[32]),
+    INIT_POOL(4096, voidp[37]),
+    INIT_POOL(4096, voidp[48]),
+    INIT_POOL(8192, voidp[65]),
+    INIT_POOL(8192, voidp[97])
+#elif SIZEOF_VOIDP == 8
+    INIT_POOL(8192, voidp[33]),
+    INIT_POOL(8192, voidp[37]),
+    INIT_POOL(8192, voidp[49])
+#endif
+};
+static inline pool_free_pointer *
+get_pool_by_size(pool_layout_t *layout, size_t size)
+{
+#define IF_POOL(i) size < sizeof( voidp[i] ) ? &layout->p##i
+    return
+	IF_POOL(4) :
+	IF_POOL(6) :
+	IF_POOL(9) :
+	IF_POOL(11) :
+	IF_POOL(16) :
+	IF_POOL(19) :
+	IF_POOL(24) :
+#if SIZEOF_VOIDP == 4
+	IF_POOL(32) :
+	IF_POOL(37) :
+	IF_POOL(48) :
+	IF_POOL(65) :
+	IF_POOL(97) :
+#elif SIZEOF_VOIDP == 8
+	IF_POOL(33) :
+	IF_POOL(37) :
+	IF_POOL(49) :
+#endif
+	NULL;
+}
+#endif
+
 typedef struct rb_objspace {
     struct {
 	size_t limit;
@@ -320,6 +403,9 @@ typedef struct rb_objspace {
 	size_t allocations;
 #endif
     } malloc_params;
+#ifdef POOL_ALLOC_API
+    pool_layout_t *pool_headers;
+#endif
     struct {
 	size_t increment;
 	struct heaps_slot *ptr;
@@ -366,8 +452,16 @@ typedef struct rb_objspace {
 #define rb_objspace (*GET_VM()->objspace)
 static int ruby_initial_gc_stress = 0;
 int *ruby_initial_gc_stress_ptr = &ruby_initial_gc_stress;
+#  ifdef POOL_ALLOC_API
+#    define pools                   objspace->pool_headers
+#  endif
 #else
+#  ifdef POOL_ALLOC_API
+static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, &pool_layout, {HEAP_MIN_SLOTS}};
+#  define pools                   &pool_layout
+#  else
 static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, {HEAP_MIN_SLOTS}};
+#  endif
 int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #endif
 #define malloc_limit		objspace->malloc_params.limit
@@ -390,6 +484,7 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #define global_List		objspace->global_list
 #define ruby_gc_stress		objspace->gc_stress
 
+
 static void rb_objspace_call_finalizer(rb_objspace_t *objspace);
 
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
@@ -400,6 +495,10 @@ rb_objspace_alloc(void)
     memset(objspace, 0, sizeof(*objspace));
     malloc_limit = initial_malloc_limit;
     ruby_gc_stress = ruby_initial_gc_stress;
+#ifdef POOL_ALLOC_API
+    pools = (pool_layout_t*) malloc(sizeof(pool_layout));
+    memcpy(pools, &pool_layout, sizeof(pool_layout));
+#endif
 
     return objspace;
 }
@@ -887,42 +986,9 @@ ruby_xfree(void *x)
 
 #ifdef POOL_ALLOC_API
 /* POOL ALLOC API */
+#define POOL_ALLOC_PART 2
 #include "pool_alloc.inc.h"
-typedef void *voidp;
-#define VOID_POOL(i) \
-    typedef voidp void##i [i]; \
-    static pool_free_pointer void##i##_pool = INIT_POOL( void##i )
-VOID_POOL(2);
-VOID_POOL(4);
-VOID_POOL(6);
-VOID_POOL(8);
-VOID_POOL(11);
-VOID_POOL(15);
-VOID_POOL(19);
-VOID_POOL(24);
-VOID_POOL(28);
-VOID_POOL(33);
-VOID_POOL(37);
-pool_holder bigger_holder = {0, 0, 38, NULL, {0}};
-
-static inline pool_free_pointer *
-get_pool_by_size(size_t size)
-{
-#define IF_POOL(i) size < sizeof( void##i ) ? &void##i##_pool
-    return 
-	IF_POOL(2) :
-	IF_POOL(4) :
-	IF_POOL(6) :
-	IF_POOL(8) :
-	IF_POOL(11) :
-	IF_POOL(15) :
-	IF_POOL(19) :
-	IF_POOL(24) :
-	IF_POOL(28) :
-	IF_POOL(33) :
-	IF_POOL(37) :
-	NULL;
-}
+#undef POOL_ALLOC_PART
 
 static inline pool_entry_list *
 entry4pool(rb_objspace_t *objspace, pool_free_pointer *pool, size_t size)
@@ -940,7 +1006,7 @@ entry4pool(rb_objspace_t *objspace, pool_free_pointer *pool, size_t size)
 static void *
 vm_xpool_malloc(rb_objspace_t *objspace, size_t size)
 {
-    pool_free_pointer *pool = get_pool_by_size(size);
+    pool_free_pointer *pool = get_pool_by_size(pools, size);
     return ENTRY2VOID(entry4pool(objspace, pool, size));
 }
 
@@ -959,7 +1025,7 @@ vm_xpool_realloc(rb_objspace_t *objspace, void *ptr, size_t size)
 {
     pool_entry_list *entry = VOID2ENTRY(ptr);
     pool_free_pointer *old_pool = entry->holder->free_pointer;
-    pool_free_pointer *new_pool = get_pool_by_size(size);
+    pool_free_pointer *new_pool = get_pool_by_size(pools, size);
     if (old_pool == new_pool) {
 	if (old_pool)
 	    return ptr;
@@ -983,7 +1049,7 @@ static void *
 vm_xpool_calloc(rb_objspace_t *objspace, size_t count, size_t elsize)
 {
     size_t size = xmalloc2_size(count, elsize);
-    pool_free_pointer *pool = get_pool_by_size(size);
+    pool_free_pointer *pool = get_pool_by_size(pools, size);
 
     if (pool) {
 	pool_entry_list *entry = pool_alloc_entry(pool);
@@ -1007,21 +1073,27 @@ ruby_xpool_malloc(size_t size)
 }
 
 void *
+ruby_xpool_malloc2(size_t count, size_t size)
+{
+    return vm_xpool_malloc(&rb_objspace, xmalloc2_size(count, size));
+}
+
+void *
 ruby_xpool_malloc_6p()
 {
-    return ENTRY2VOID(pool_alloc_entry(&void6_pool));
+    return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p6));
 }
 
 void *
 ruby_xpool_malloc_11p()
 {
-    return ENTRY2VOID(pool_alloc_entry(&void11_pool));
+    return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p11));
 }
 
 void *
 ruby_xpool_malloc_19p()
 {
-    return ENTRY2VOID(pool_alloc_entry(&void19_pool));
+    return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p19));
 }
 
 void *
@@ -1034,6 +1106,12 @@ void *
 ruby_xpool_realloc(void *ptr, size_t size)
 {
     return vm_xpool_realloc(&rb_objspace, ptr, size);
+}
+
+void *
+ruby_xpool_realloc2(void *ptr, size_t count, size_t size)
+{
+    return vm_xpool_realloc(&rb_objspace, ptr, xmalloc2_size(count, size));
 }
 
 void
