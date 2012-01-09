@@ -1007,6 +1007,24 @@ ruby_xpool_malloc(size_t size)
 }
 
 void *
+ruby_xpool_malloc_6p()
+{
+    return ENTRY2VOID(pool_alloc_entry(&void6_pool));
+}
+
+void *
+ruby_xpool_malloc_11p()
+{
+    return ENTRY2VOID(pool_alloc_entry(&void11_pool));
+}
+
+void *
+ruby_xpool_malloc_19p()
+{
+    return ENTRY2VOID(pool_alloc_entry(&void19_pool));
+}
+
+void *
 ruby_xpool_calloc(size_t n, size_t size)
 {
     return vm_xpool_calloc(&rb_objspace, n, size);

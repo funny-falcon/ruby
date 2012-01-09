@@ -78,16 +78,32 @@ static void rehash(st_table *);
 
 /* preparation for possible allocation improvements */
 #ifdef POOL_ALLOC_API
-#define st_alloc_entry() (st_table_entry *)ruby_xpool_malloc(sizeof(st_table_entry))
+#define st_alloc_entry() (st_table_entry *)ruby_xpool_malloc_6p()
 #define st_free_entry(entry) ruby_xpool_free(entry)
-#define st_alloc_table() (st_table *)ruby_xpool_malloc(sizeof(st_table))
+#define st_alloc_table() (st_table *)ruby_xpool_malloc_6p()
 #define st_dealloc_table(table) ruby_xpool_free(table)
-#define st_alloc_bins(size) (st_table_entry **)ruby_xpool_calloc(size, sizeof(st_table_entry *))
+static inline st_table_entry **
+st_alloc_bins(st_index_t size)
+{
+    st_table_entry **result;
+    if (size == 11) {
+        result = (st_table_entry **) ruby_xpool_malloc_11p();
+        memset(result, 0, 11 * sizeof(st_table_entry *));
+    }
+    else if (size == 19) {
+        result = (st_table_entry **) ruby_xpool_malloc_19p();
+        memset(result, 0, 19 * sizeof(st_table_entry *));
+    }
+    else
+        result = (st_table_entry **) ruby_xpool_calloc(size, sizeof(st_table_entry*));
+    return result;
+}
 #define st_free_bins(bins, size) ruby_xpool_free(bins)
 static inline st_table_entry**
 st_realloc_bins(st_table_entry **bins, st_index_t newsize, st_index_t oldsize)
 {
-    bins = (st_table_entry **) ruby_xpool_realloc(bins, newsize * sizeof(st_table_entry *));
+    ruby_xpool_free(bins);
+    bins = st_alloc_bins(newsize);
     memset(bins, 0, newsize * sizeof(st_table_entry *));
     return bins;
 }
