@@ -1059,23 +1059,20 @@ ruby_xpool_malloc2(size_t count, size_t size)
     return vm_xpool_malloc(&rb_objspace, xmalloc2_size(count, size));
 }
 
-void *
-ruby_xpool_malloc_6p()
-{
-    return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p6));
+#define CONCRET_POOL_MALLOC(pnts) \
+void * ruby_xpool_malloc_##pnts##p () { \
+    return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p##pnts )); \
 }
-
-void *
-ruby_xpool_malloc_11p()
-{
-    return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p11));
-}
-
-void *
-ruby_xpool_malloc_19p()
-{
-    return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p19));
-}
+CONCRET_POOL_MALLOC(4)
+CONCRET_POOL_MALLOC(6)
+CONCRET_POOL_MALLOC(8)
+CONCRET_POOL_MALLOC(11)
+CONCRET_POOL_MALLOC(16)
+CONCRET_POOL_MALLOC(19)
+CONCRET_POOL_MALLOC(24)
+CONCRET_POOL_MALLOC(32)
+CONCRET_POOL_MALLOC(48)
+#undef CONCRET_POOL_MALLOC
 
 void *
 ruby_xpool_calloc(size_t n, size_t size)

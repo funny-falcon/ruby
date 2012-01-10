@@ -100,9 +100,19 @@ void  ruby_xpool_free(void *ptr);
 void *ruby_xpool_realloc(void* ptr, size_t size);
 void *ruby_xpool_realloc2(void* ptr, size_t count, size_t size);
 void *ruby_xpool_calloc(size_t count, size_t size);
+void *ruby_xpool_malloc_4p();
 void *ruby_xpool_malloc_6p();
+void *ruby_xpool_malloc_8p();
 void *ruby_xpool_malloc_11p();
 void *ruby_xpool_malloc_19p();
+void *ruby_xpool_malloc_24p();
+void *ruby_xpool_malloc_32p();
+void *ruby_xpool_malloc_48p();
+#if SIZEOF_VOIDP == 4
+#define ruby_xpool_malloc_128b ruby_xpool_malloc_32p
+#else
+#define ruby_xpool_malloc_128b ruby_xpool_malloc_16p
+#endif
 #endif
 
 /* inits.c */

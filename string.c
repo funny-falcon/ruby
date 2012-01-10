@@ -754,7 +754,12 @@ rb_str_buf_new(long capa)
     }
     FL_SET(str, STR_NOEMBED);
     RSTRING(str)->as.heap.aux.capa = capa;
-    RSTRING(str)->as.heap.ptr = ALLOC_N(char, capa+1);
+#ifdef POOL_ALLOC_API
+    if (capa == STR_BUF_MIN_SIZE)
+	RSTRING(str)->as.heap.ptr = (char*) ruby_xpool_malloc_128b();
+    else
+#endif
+	RSTRING(str)->as.heap.ptr = ALLOC_N(char, capa+1);
     RSTRING(str)->as.heap.ptr[0] = '\0';
 
     return str;
