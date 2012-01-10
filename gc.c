@@ -322,22 +322,20 @@ typedef void *voidp;
 typedef struct pool_layout_t pool_layout_t;
 struct pool_layout_t {
     pool_free_pointer
+#if SIZEOF_VOIDP == 8
       p4,
+#endif
       p6,  /* st_table && st_table_entry */
       p8,
       p11, /* st_table.bins init size */
       p16, /* str_buf_min_size if sizeof(void*) == 4*/
       p19, /* st_table.bins second size */
       p24,
-      p32, /* str_buf_min_size or str_buf_min_size  * 2 */
-      p37, /* st_table.bins third size */
-      p48, /* str_buf_min_size * 3 if sizeof(void*) == 8 */
-#if SIZEOF_VOIDP == 4
-      p64, /* str_buf_min_size * 2 */
-      p96; /* str_buf_min_size * 3 */
-#endif
+      p32; /* str_buf_min_size or str_buf_min_size  * 2 */
 } pool_layout = {
+#if SIZEOF_VOIDP == 8
     INIT_POOL(4096, voidp[4]),
+#endif
     INIT_POOL(4096, voidp[6]),
     INIT_POOL(4096, voidp[8]),
     INIT_POOL(4096, voidp[11]),
@@ -345,19 +343,15 @@ struct pool_layout_t {
     INIT_POOL(4096, voidp[19]),
     INIT_POOL(4096, voidp[24]),
     INIT_POOL(4096, voidp[32]),
-    INIT_POOL(8192, voidp[37]),
-    INIT_POOL(8192, voidp[48]),
-#if SIZEOF_VOIDP == 4
-    INIT_POOL(8192, voidp[64]),
-    INIT_POOL(8192, voidp[96])
-#endif
 };
 static inline pool_free_pointer *
 get_pool_by_size(pool_layout_t *layout, size_t size)
 {
 #define IF_POOL(i) size < sizeof( voidp[i] ) ? &layout->p##i
     return
+#if SIZEOF_VOIDP == 8
 	IF_POOL(4) :
+#endif
 	IF_POOL(6) :
 	IF_POOL(8) :
 	IF_POOL(11) :
@@ -365,12 +359,6 @@ get_pool_by_size(pool_layout_t *layout, size_t size)
 	IF_POOL(19) :
 	IF_POOL(24) :
 	IF_POOL(32) :
-	IF_POOL(37) :
-	IF_POOL(48) :
-#if SIZEOF_VOIDP == 4
-	IF_POOL(64) :
-	IF_POOL(96) :
-#endif
 	NULL;
 }
 #endif
@@ -1063,7 +1051,6 @@ ruby_xpool_malloc2(size_t count, size_t size)
 void * ruby_xpool_malloc_##pnts##p () { \
     return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p##pnts )); \
 }
-CONCRET_POOL_MALLOC(4)
 CONCRET_POOL_MALLOC(6)
 CONCRET_POOL_MALLOC(8)
 CONCRET_POOL_MALLOC(11)
@@ -1071,7 +1058,6 @@ CONCRET_POOL_MALLOC(16)
 CONCRET_POOL_MALLOC(19)
 CONCRET_POOL_MALLOC(24)
 CONCRET_POOL_MALLOC(32)
-CONCRET_POOL_MALLOC(48)
 #undef CONCRET_POOL_MALLOC
 
 void *
