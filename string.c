@@ -1849,7 +1849,7 @@ str_buf_cat(VALUE str, const char *ptr, long len)
 		capa = (total + 4095) / 4096;
 		break;
 	    }
-	    capa = (capa + 1) * 2;
+	    capa = capa * 2 + 1;
 	}
 	RESIZE_CAPA(str, capa);
     }

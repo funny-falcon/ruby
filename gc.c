@@ -322,49 +322,34 @@ typedef void *voidp;
 typedef struct pool_layout_t pool_layout_t;
 struct pool_layout_t {
     pool_free_pointer
+      p4,
+      p6,  /* st_table && st_table_entry */
+      p8,
+      p11, /* st_table.bins init size */
+      p16, /* str_buf_min_size if sizeof(void*) == 4*/
+      p19, /* st_table.bins second size */
+      p24,
+      p32, /* str_buf_min_size or str_buf_min_size  * 2 */
+      p37, /* st_table.bins third size */
+      p48, /* str_buf_min_size * 3 if sizeof(void*) == 8 */
 #if SIZEOF_VOIDP == 4
-      p4,
-      p6,  /* st_table && st_table_entry */
-      p9,
-      p11, /* st_table.bins init size */
-      p16,
-      p19, /* st_table.bins second size */
-      p24,
-      p32, /* str_buf_min_size */
-      p37, /* st_table.bins third size */
-      p48,
-      p65, /* str_buf_min_size * 2 + 1 */
-      p97; /* str_buf_min_size * 3 + 1 */
-#elif SIZEOF_VOIDP == 8
-      p4,
-      p6,  /* st_table && st_table_entry */
-      p9,
-      p11, /* st_table.bins init size */
-      p16, /* str_buf_min_size */
-      p19, /* st_table.bins second size */
-      p24,
-      p33, /* str_buf_min_size * 2 + 1 */
-      p37, /* st_table.bins third size */
-      p49; /* str_buf_min_size * 3 + 1 */
+      p64, /* str_buf_min_size * 2 */
+      p96; /* str_buf_min_size * 3 */
 #endif
 } pool_layout = {
     INIT_POOL(4096, voidp[4]),
     INIT_POOL(4096, voidp[6]),
-    INIT_POOL(4096, voidp[9]),
+    INIT_POOL(4096, voidp[8]),
     INIT_POOL(4096, voidp[11]),
     INIT_POOL(4096, voidp[16]),
     INIT_POOL(4096, voidp[19]),
     INIT_POOL(4096, voidp[24]),
-#if SIZEOF_VOIDP == 4
     INIT_POOL(4096, voidp[32]),
-    INIT_POOL(4096, voidp[37]),
-    INIT_POOL(4096, voidp[48]),
-    INIT_POOL(8192, voidp[65]),
-    INIT_POOL(8192, voidp[97])
-#elif SIZEOF_VOIDP == 8
-    INIT_POOL(8192, voidp[33]),
     INIT_POOL(8192, voidp[37]),
-    INIT_POOL(8192, voidp[49])
+    INIT_POOL(8192, voidp[48]),
+#if SIZEOF_VOIDP == 4
+    INIT_POOL(8192, voidp[64]),
+    INIT_POOL(8192, voidp[96])
 #endif
 };
 static inline pool_free_pointer *
@@ -374,21 +359,17 @@ get_pool_by_size(pool_layout_t *layout, size_t size)
     return
 	IF_POOL(4) :
 	IF_POOL(6) :
-	IF_POOL(9) :
+	IF_POOL(8) :
 	IF_POOL(11) :
 	IF_POOL(16) :
 	IF_POOL(19) :
 	IF_POOL(24) :
-#if SIZEOF_VOIDP == 4
 	IF_POOL(32) :
 	IF_POOL(37) :
 	IF_POOL(48) :
-	IF_POOL(65) :
-	IF_POOL(97) :
-#elif SIZEOF_VOIDP == 8
-	IF_POOL(33) :
-	IF_POOL(37) :
-	IF_POOL(49) :
+#if SIZEOF_VOIDP == 4
+	IF_POOL(64) :
+	IF_POOL(96) :
 #endif
 	NULL;
 }
