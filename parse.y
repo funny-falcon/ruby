@@ -5829,7 +5829,11 @@ dispose_string(VALUE str)
 {
     /* TODO: should use another API? */
     if (RBASIC(str)->flags & RSTRING_NOEMBED)
-	xfree(RSTRING_PTR(str));
+#ifdef POOL_ALLOC_API
+        ruby_xpool_free(RSTRING_PTR(str));
+#else
+        xfree(RSTRING_PTR(str));
+#endif
     rb_gc_force_recycle(str);
 }
 

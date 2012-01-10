@@ -317,7 +317,7 @@ struct gc_list {
 #include "pool_alloc.inc.h"
 #undef POOL_ALLOC_PART
 
-pool_holder bigger_holder = {0, 0, 38, NULL, {0}};
+pool_holder bigger_holder = {0, 0, 100, NULL, {0}};
 typedef void *voidp;
 typedef struct pool_layout_t pool_layout_t;
 struct pool_layout_t {

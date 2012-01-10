@@ -46,6 +46,19 @@
 #undef rb_str_buf_cat2
 #undef rb_str_cat2
 
+#ifdef POOL_ALLOC_API
+#undef xmalloc2
+#undef xmalloc
+#undef xrealloc
+#undef xrealloc2
+#undef xfree
+#define xmalloc2 ruby_xpool_malloc2
+#define xmalloc ruby_xpool_malloc
+#define xrealloc ruby_xpool_realloc
+#define xrealloc2 ruby_xpool_realloc2
+#define xfree ruby_xpool_free
+#endif
+
 static VALUE rb_str_clear(VALUE str);
 
 VALUE rb_cString;
@@ -729,7 +742,7 @@ str_new_empty(VALUE str)
     return v;
 }
 
-#define STR_BUF_MIN_SIZE 128
+#define STR_BUF_MIN_SIZE 127
 
 VALUE
 rb_str_buf_new(long capa)
