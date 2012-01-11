@@ -7,7 +7,7 @@
 #include "st.h"
 #else
 #include "ruby/ruby.h"
-#include "internal.h"
+#include "pool_alloc.h"
 #endif
 
 #include <stdio.h>

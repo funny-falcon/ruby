@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <ctype.h>
+#include "pool_alloc.h"
 
 #define numberof(array) (int)(sizeof(array) / sizeof((array)[0]))
 

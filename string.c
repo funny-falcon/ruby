@@ -16,6 +16,7 @@
 #include "ruby/encoding.h"
 #include "internal.h"
 #include <assert.h>
+#include "pool_alloc.h"
 
 #define BEG(no) (regs->beg[(no)])
 #define END(no) (regs->end[(no)])
