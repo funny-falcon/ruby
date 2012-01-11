@@ -95,17 +95,22 @@ st_alloc_bins(st_index_t size)
         memset(result, 0, 19 * sizeof(st_table_entry *));
     }
     else
-        result = (st_table_entry **) ruby_xpool_calloc(size, sizeof(st_table_entry*));
+        result = (st_table_entry **) ruby_xcalloc(size, sizeof(st_table_entry*));
     return result;
 }
-#define st_free_bins(bins, size) ruby_xpool_free(bins)
+static inline void
+st_free_bins(st_table_entry **bins, st_index_t size)
+{
+    if (size == 11 || size == 19)
+	ruby_xpool_free(bins);
+    else
+	ruby_xfree(bins);
+}
 static inline st_table_entry**
 st_realloc_bins(st_table_entry **bins, st_index_t newsize, st_index_t oldsize)
 {
-    ruby_xpool_free(bins);
-    bins = st_alloc_bins(newsize);
-    memset(bins, 0, newsize * sizeof(st_table_entry *));
-    return bins;
+    st_free_bins(bins, oldsize);
+    return st_alloc_bins(newsize);
 }
 #else
 #define st_alloc_entry() (st_table_entry *)malloc(sizeof(st_table_entry))

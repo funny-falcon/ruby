@@ -326,38 +326,29 @@ struct pool_layout_t {
       p4,
 #endif
       p6,  /* st_table && st_table_entry */
-      p8,
       p11, /* st_table.bins init size */
-      p16, /* str_buf_min_size if sizeof(void*) == 4*/
       p19, /* st_table.bins second size */
-      p24,
       p32; /* str_buf_min_size or str_buf_min_size  * 2 */
 } pool_layout = {
 #if SIZEOF_VOIDP == 8
     INIT_POOL(4096, voidp[4]),
 #endif
     INIT_POOL(4096, voidp[6]),
-    INIT_POOL(4096, voidp[8]),
     INIT_POOL(4096, voidp[11]),
-    INIT_POOL(4096, voidp[16]),
-    INIT_POOL(4096, voidp[19]),
-    INIT_POOL(4096, voidp[24]),
-    INIT_POOL(4096, voidp[32]),
+    INIT_POOL(8192, voidp[19]),
+    INIT_POOL(32768, voidp[32]),
 };
 static inline pool_free_pointer *
 get_pool_by_size(pool_layout_t *layout, size_t size)
 {
-#define IF_POOL(i) size < sizeof( voidp[i] ) ? &layout->p##i
+#define IF_POOL(i) size <= sizeof( voidp[i] ) ? &layout->p##i
     return
 #if SIZEOF_VOIDP == 8
 	IF_POOL(4) :
 #endif
 	IF_POOL(6) :
-	IF_POOL(8) :
 	IF_POOL(11) :
-	IF_POOL(16) :
 	IF_POOL(19) :
-	IF_POOL(24) :
 	IF_POOL(32) :
 	NULL;
 }
@@ -855,15 +846,7 @@ vm_xrealloc(rb_objspace_t *objspace, void *ptr, size_t size)
     ptr = (size_t *)ptr - 1;
 #endif
 
-    mem = realloc(ptr, size);
-    if (!mem) {
-	if (garbage_collect_with_gvl(objspace)) {
-	    mem = realloc(ptr, size);
-	}
-	if (!mem) {
-	    ruby_memerror();
-        }
-    }
+    TRY_WITH_GC(mem = realloc(ptr, size));
     malloc_increase += size;
 
 #if CALC_EXACT_MALLOC_SIZE
@@ -920,7 +903,12 @@ vm_xcalloc(rb_objspace_t *objspace, size_t count, size_t elsize)
     size = xmalloc2_size(count, elsize);
     size = vm_malloc_prepare(objspace, size);
 
-    TRY_WITH_GC(mem = calloc(1, size));
+    if (size < 8192) {
+	TRY_WITH_GC(mem = malloc(size));
+	memset(mem, 0, size);
+    } else {
+	TRY_WITH_GC(mem = calloc(1, size));
+    }
     return vm_malloc_fixup(objspace, mem, size);
 }
 
@@ -1026,10 +1014,7 @@ vm_xpool_calloc(rb_objspace_t *objspace, size_t count, size_t elsize)
 	return ENTRY2VOID(entry);
     }
     else {
-	void *mem;
-	size = vm_malloc_prepare(objspace, size + ENTRY_DATA_OFFSET);
-	TRY_WITH_GC(mem = calloc(1, size));
-	mem = vm_malloc_fixup(objspace, mem, size);
+	void *mem = vm_xcalloc(objspace, 1, size + ENTRY_DATA_OFFSET);
 	ENTRY(mem)->holder = &bigger_holder;
 	return ENTRY2VOID(mem);
     }
@@ -1052,11 +1037,8 @@ void * ruby_xpool_malloc_##pnts##p () { \
     return ENTRY2VOID(pool_alloc_entry(&rb_objspace.pool_headers->p##pnts )); \
 }
 CONCRET_POOL_MALLOC(6)
-CONCRET_POOL_MALLOC(8)
 CONCRET_POOL_MALLOC(11)
-CONCRET_POOL_MALLOC(16)
 CONCRET_POOL_MALLOC(19)
-CONCRET_POOL_MALLOC(24)
 CONCRET_POOL_MALLOC(32)
 #undef CONCRET_POOL_MALLOC
 
