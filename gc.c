@@ -36,6 +36,11 @@
 
 #if defined _WIN32 || defined __CYGWIN__
 #include <windows.h>
+#elif defined POOL_ALLOC_API
+#if   defined(HAVE_POSIX_MEMALIGN)
+#elif defined(HAVE_MEMALIGN)
+#include <malloc.h>
+#endif
 #endif
 
 #ifdef HAVE_VALGRIND_MEMCHECK_H
@@ -323,12 +328,10 @@ typedef struct pool_layout_t pool_layout_t;
 struct pool_layout_t {
     pool_free_pointer
       p6,  /* st_table && st_table_entry */
-      p11, /* st_table.bins init size */
-      p19; /* st_table.bins second size */
+      p11;  /* st_table.bins init size */
 } pool_layout = {
-    INIT_POOL(4096, voidp[6]),
-    INIT_POOL(4096, voidp[11]),
-    INIT_POOL(8192, voidp[19])
+    INIT_POOL(voidp[6]),
+    INIT_POOL(voidp[11])
 };
 #endif
 
@@ -939,7 +942,6 @@ void * ruby_xpool_malloc_##pnts##p () { \
 }
 CONCRET_POOL_MALLOC(6)
 CONCRET_POOL_MALLOC(11)
-CONCRET_POOL_MALLOC(19)
 #undef CONCRET_POOL_MALLOC
 
 #endif
