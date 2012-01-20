@@ -20,6 +20,7 @@
 #include "vm_core.h"
 #include "internal.h"
 #include "gc.h"
+#include "pool_alloc.h"
 #include "constant.h"
 #include <stdio.h>
 #include <setjmp.h>
@@ -344,6 +345,24 @@ struct gc_list {
 #define CALC_EXACT_MALLOC_SIZE 0
 #endif
 
+#ifdef POOL_ALLOC_API
+/* POOL ALLOC API */
+#define POOL_ALLOC_PART 1
+#include "pool_alloc.inc.h"
+#undef POOL_ALLOC_PART
+
+typedef void *voidp;
+typedef struct pool_layout_t pool_layout_t;
+struct pool_layout_t {
+    pool_header
+      p6,  /* st_table && st_table_entry */
+      p11;  /* st_table.bins init size */
+} pool_layout = {
+    INIT_POOL(voidp[6]),
+    INIT_POOL(voidp[11])
+};
+#endif
+
 typedef struct rb_objspace {
     struct {
 	size_t limit;
@@ -353,6 +372,9 @@ typedef struct rb_objspace {
 	size_t allocations;
 #endif
     } malloc_params;
+#ifdef POOL_ALLOC_API
+    pool_layout_t *pool_headers;
+#endif
     struct {
 	size_t increment;
 	struct heaps_slot *ptr;
@@ -401,8 +423,16 @@ typedef struct rb_objspace {
 #define rb_objspace (*GET_VM()->objspace)
 #define ruby_initial_gc_stress	initial_params.gc_stress
 int *ruby_initial_gc_stress_ptr = &ruby_initial_gc_stress;
+#  ifdef POOL_ALLOC_API
+#    define pools                   objspace->pool_headers
+#  endif
 #else
+#  ifdef POOL_ALLOC_API
+static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, &pool_layout, {HEAP_MIN_SLOTS}};
+#  define pools                   &pool_layout
+#  else
 static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, {HEAP_MIN_SLOTS}};
+#  endif
 int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #endif
 #define malloc_limit		objspace->malloc_params.limit
@@ -444,6 +474,10 @@ rb_objspace_alloc(void)
     memset(objspace, 0, sizeof(*objspace));
     malloc_limit = initial_malloc_limit;
     ruby_gc_stress = ruby_initial_gc_stress;
+#ifdef POOL_ALLOC_API
+    pools = (pool_layout_t*) malloc(sizeof(pool_layout));
+    memcpy(pools, &pool_layout, sizeof(pool_layout));
+#endif
 
     return objspace;
 }
@@ -492,11 +526,12 @@ rb_gc_set_params(void)
     }
 }
 
+static void *aligned_malloc(size_t alignment, size_t size);
+static void aligned_free(void *);
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
 static void gc_sweep(rb_objspace_t *);
 static void slot_sweep(rb_objspace_t *, struct heaps_slot *);
 static void gc_clear_mark_on_sweep_slots(rb_objspace_t *);
-static void aligned_free(void *);
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
@@ -532,6 +567,11 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
+#ifdef POOL_ALLOC_API
+    if (objspace->pool_headers) {
+	free(objspace->pool_headers);
+    }
+#endif
     free(objspace);
 }
 #endif
@@ -939,6 +979,27 @@ ruby_xfree(void *x)
 	vm_xfree(&rb_objspace, x);
 }
 
+#ifdef POOL_ALLOC_API
+/* POOL ALLOC API */
+#define POOL_ALLOC_PART 2
+#include "pool_alloc.inc.h"
+#undef POOL_ALLOC_PART
+
+void
+ruby_xpool_free(void *ptr)
+{
+    pool_free(ptr);
+}
+
+#define CONCRET_POOL_MALLOC(pnts) \
+void * ruby_xpool_malloc_##pnts##p () { \
+    return pool_alloc(&rb_objspace.pool_headers->p##pnts ); \
+}
+CONCRET_POOL_MALLOC(6)
+CONCRET_POOL_MALLOC(11)
+#undef CONCRET_POOL_MALLOC
+
+#endif
 
 /* Mimic ruby_xmalloc, but need not rb_objspace.
  * should return pointer suitable for ruby_xfree
