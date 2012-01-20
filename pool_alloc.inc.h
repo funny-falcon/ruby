@@ -9,38 +9,29 @@
 
 #if POOL_ALLOC_PART == 1
 #define DEFAULT_POOL_SIZE 8192
-typedef unsigned int pool_free_counter;
 typedef unsigned int pool_holder_counter;
 
 typedef struct pool_entry_list pool_entry_list;
 typedef struct pool_holder pool_holder;
 
 typedef struct pool_free_pointer {
-    pool_entry_list     *free;
-    pool_free_counter    count;
+    pool_holder         *first;
+    pool_holder         *_black_magick;
     pool_holder_counter  size; // size of entry in sizeof(void*) items
     pool_holder_counter  total; // size of entry in sizeof(void*) items
 } pool_free_pointer;
 
-struct pool_entry_list {
-    pool_entry_list *fore, *back;
-};
-#define ENTRY(ptr) ((pool_entry_list*)(ptr))
-#define ENTRY_DATA_OFFSET offsetof(pool_entry_list, fore)
-#define VOID2ENTRY(ptr) ENTRY((char*)(ptr) - ENTRY_DATA_OFFSET)
-#define ENTRY2VOID(ptr) ((void*)((char*)(ptr) + ENTRY_DATA_OFFSET))
-
 struct pool_holder {
     pool_holder_counter free, total;
-    pool_holder_counter size;
     pool_free_pointer  *free_pointer;
+    void               *freep;
+    pool_holder        *fore, *back;
     void *data[1];
 };
-#define POOL_DATA_SIZE(pool_size) (((pool_size) - sizeof(void*) * 6 - offsetof(pool_holder, data))/sizeof(void*))
-#define POOL_HOLDER_SIZE (offsetof(pool_holder, data) + pointer->size*pointer->total*sizeof(void*))
-#define POOL_ENTRY_SIZE(item_type) (((sizeof(item_type)+ENTRY_DATA_OFFSET-1)/sizeof(void*)+1))
+#define POOL_DATA_SIZE(pool_size) (((pool_size) - sizeof(void*) * 6 - offsetof(pool_holder, data)) / sizeof(void*))
+#define POOL_ENTRY_SIZE(item_type) ((sizeof(item_type) - 1) / sizeof(void*) + 1)
 #define POOL_HOLDER_COUNT(pool_size, item_type) (POOL_DATA_SIZE(pool_size)/POOL_ENTRY_SIZE(item_type))
-#define INIT_POOL(item_type) {NULL, 0, POOL_ENTRY_SIZE(item_type), POOL_HOLDER_COUNT(DEFAULT_POOL_SIZE, item_type)}
+#define INIT_POOL(item_type) {NULL, NULL, POOL_ENTRY_SIZE(item_type), POOL_HOLDER_COUNT(DEFAULT_POOL_SIZE, item_type)}
 
 #elif POOL_ALLOC_PART == 2
 static void *
@@ -78,7 +69,7 @@ aligned_free(void *ptr)
 #endif
 }
 
-static void
+static pool_holder *
 pool_holder_alloc(pool_free_pointer *pointer)
 {
     pool_holder *holder;
@@ -89,7 +80,7 @@ pool_holder_alloc(pool_free_pointer *pointer)
 	    pointer->size * pointer->total * sizeof(void*);
 #define objspace (&rb_objspace)
     vm_malloc_prepare(objspace, DEFAULT_POOL_SIZE - sizeof(size_t));
-    if (pointer->free != NULL) return;
+    if (pointer->first != NULL) return pointer->first;
     TRY_WITH_GC(holder = (pool_holder*) aligned_malloc(DEFAULT_POOL_SIZE, sz));
     malloc_increase += DEFAULT_POOL_SIZE;
 #if CALC_EXACT_MALLOC_SIZE
@@ -102,93 +93,98 @@ pool_holder_alloc(pool_free_pointer *pointer)
     count = pointer->total;
     holder->free = count;
     holder->total = count;
-    holder->size = size;
     holder->free_pointer = pointer;
+    holder->fore = NULL;
+    holder->back = NULL;
+    holder->freep = &holder->data;
     ptr = holder->data;
-    ENTRY(ptr)->back = NULL;
     for(i = count - 1; i; i-- ) {
-        ENTRY(ptr)->fore = ENTRY(ptr + size);
-        ENTRY(ptr + size)->back = ENTRY(ptr);
-	ptr += size;
+	ptr = *ptr = ptr + size;
     }
-    ENTRY(ptr)->fore = pointer->free;
-    pointer->free = ENTRY(holder->data);
-    pointer->count += count;
+    *ptr = NULL;
+    pointer->first = holder;
+    return holder;
 }
 
-static void
-pool_holder_free(pool_holder *holder)
+static inline void
+pool_holder_unchaing(pool_free_pointer *pointer, pool_holder *holder)
 {
-    void **ptr = holder->data;
-    pool_free_pointer *pointer = holder->free_pointer;
-    pool_holder_counter i, size, total;
-
-    size = holder->size;
-    total = holder->total;
-
-    for(i = total; i; i--) {
-	register pool_entry_list
-	    *fore = ENTRY(ptr)->fore,
-	    *back = ENTRY(ptr)->back;
-
-	if (fore)  fore->back    = back;
-	if (back)  back->fore    = fore;
-	else       pointer->free = fore;
-	ptr += size;
-    }
-    pointer->count-= total;
-
-    aligned_free(holder);
-#if CALC_EXACT_MALLOC_SIZE
-    rb_objspace.malloc_params.allocated_size += DEFAULT_POOL_SIZE;
-    rb_objspace.malloc_params.allocations++;
-#endif
+    register pool_holder *fore = holder->fore, *back = holder->back;
+    holder->fore = NULL;
+    holder->back = NULL;
+    if (fore != NULL)  fore->back     = back;
+    else               pointer->_black_magick = back;
+    if (back != NULL)  back->fore     = fore;
+    else               pointer->first = fore;
 }
 
 static inline pool_holder *
-entry_holder(pool_entry_list *entry)
+entry_holder(void **entry)
 {
     return (pool_holder*)(((uintptr_t)entry) & ~(DEFAULT_POOL_SIZE - 1));
 }
 
 static inline void
-pool_free_entry(pool_entry_list *entry)
+pool_free_entry(void **entry)
 {
     pool_holder *holder = entry_holder(entry);
     pool_free_pointer *pointer = holder->free_pointer;
-    register pool_entry_list *free;
-    entry->back = NULL;
-    entry->fore = (free = pointer->free);
-    pointer->free = entry;
-    if (free) { free->back = entry; }
-    holder->free++;
-    if (holder->free == holder->total) {
-        pool_holder_free(holder);
+
+    if (holder->free++ == 0) {
+	register pool_holder *first = pointer->first;
+	if (first == NULL) {
+	    pointer->first = holder;
+	} else {
+	    holder->back = first;
+	    holder->fore = first->fore;
+	    first->fore = holder;
+	    if (holder->fore)
+		holder->fore->back = holder;
+	    else
+		pointer->_black_magick = holder;
+	}
+    } else if (holder->free == holder->total && pointer->first != holder ) {
+	pool_holder_unchaing(pointer, holder);
+	aligned_free(holder);
+#if CALC_EXACT_MALLOC_SIZE
+	rb_objspace.malloc_params.allocated_size -= DEFAULT_POOL_SIZE;
+	rb_objspace.malloc_params.allocations--;
+#endif
+	return;
     }
+
+    *entry = holder->freep;
+    holder->freep = entry;
 }
 
-static inline pool_entry_list *
+static inline void*
 pool_alloc_entry(pool_free_pointer *pointer)
 {
-    pool_entry_list *result;
-    if (pointer->free == NULL) {
-        pool_holder_alloc(pointer);
+    pool_holder *holder = pointer->first;
+    void **result;
+    if (holder == NULL) {
+	holder = pool_holder_alloc(pointer);
     }
-    result = pointer->free;
-    pointer->free = result->fore;
-    entry_holder(result)->free--;
+
+    result = holder->freep;
+    holder->freep = *result;
+
+    if (--holder->free == 0) {
+	pool_holder_unchaing(pointer, holder);
+    }
+
     return result;
 }
 
 static inline void
 pool_free(void *p)
 {
-    pool_free_entry(VOID2ENTRY(p));
+    pool_free_entry((void **)p);
 }
 
 static inline void*
 pool_alloc(pool_free_pointer *pointer)
 {
-    return ENTRY2VOID(pool_alloc_entry(pointer));
+    return pool_alloc_entry(pointer);
 }
 #endif
