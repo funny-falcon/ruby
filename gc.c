@@ -323,16 +323,16 @@ struct gc_list {
 #include "pool_alloc.inc.h"
 #undef POOL_ALLOC_PART
 
-typedef void *voidp;
 typedef struct pool_layout_t pool_layout_t;
 struct pool_layout_t {
-    pool_free_pointer
+    pool_header
       p6,  /* st_table && st_table_entry */
       p11;  /* st_table.bins init size */
 } pool_layout = {
-    INIT_POOL(voidp[6]),
-    INIT_POOL(voidp[11])
+    INIT_POOL(void*[6]),
+    INIT_POOL(void*[11])
 };
+static void pool_finalize_header(pool_header *header);
 #endif
 
 typedef struct rb_objspace {
@@ -393,13 +393,9 @@ typedef struct rb_objspace {
 #define rb_objspace (*GET_VM()->objspace)
 static int ruby_initial_gc_stress = 0;
 int *ruby_initial_gc_stress_ptr = &ruby_initial_gc_stress;
-#  ifdef POOL_ALLOC_API
-#    define pools                   objspace->pool_headers
-#  endif
 #else
 #  ifdef POOL_ALLOC_API
 static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, &pool_layout, {HEAP_MIN_SLOTS}};
-#  define pools                   &pool_layout
 #  else
 static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, {HEAP_MIN_SLOTS}};
 #  endif
@@ -436,8 +432,8 @@ rb_objspace_alloc(void)
     malloc_limit = initial_malloc_limit;
     ruby_gc_stress = ruby_initial_gc_stress;
 #ifdef POOL_ALLOC_API
-    pools = (pool_layout_t*) malloc(sizeof(pool_layout));
-    memcpy(pools, &pool_layout, sizeof(pool_layout));
+    objspace->pool_headers = (pool_layout_t*) malloc(sizeof(pool_layout));
+    memcpy(objspace->pool_headers, &pool_layout, sizeof(pool_layout));
 #endif
 
     return objspace;
@@ -516,6 +512,13 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
+#ifdef POOL_ALLOC_API
+    if (objspace->pool_headers) {
+        pool_finalize_header(&objspace->pool_headers->p6);
+        pool_finalize_header(&objspace->pool_headers->p11);
+        free(objspace->pool_headers);
+    }
+#endif
     free(objspace);
 }
 #else
@@ -933,12 +936,12 @@ ruby_xfree(void *x)
 void
 ruby_xpool_free(void *ptr)
 {
-    pool_free(ptr);
+    pool_free_entry((void**)ptr);
 }
 
 #define CONCRET_POOL_MALLOC(pnts) \
 void * ruby_xpool_malloc_##pnts##p () { \
-    return pool_alloc(&rb_objspace.pool_headers->p##pnts ); \
+    return pool_alloc_entry(&rb_objspace.pool_headers->p##pnts ); \
 }
 CONCRET_POOL_MALLOC(6)
 CONCRET_POOL_MALLOC(11)
