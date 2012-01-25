@@ -30,7 +30,7 @@ static const char *const loadable_ext[] = {
 
 static VALUE rb_checked_expanded_cache(int*);
 static void rb_set_expanded_cache(VALUE, int);
-static VALUE rb_expand_load_paths(int, VALUE*, int*);
+static VALUE rb_expand_load_paths(long, VALUE*, int*);
 static int cached_expanded_load_path = 1;
 
 VALUE
@@ -868,9 +868,9 @@ rb_set_expanded_cache(VALUE expanded, int has_relative)
 }
 
 static VALUE
-rb_expand_load_paths(int pathc, VALUE* paths, int *has_relative)
+rb_expand_load_paths(long pathc, VALUE* paths, int *has_relative)
 {
-    int i;
+    long i;
     const char *p;
     VALUE path, expanded = rb_ary_new2(pathc);
 
@@ -936,7 +936,7 @@ rb_load_path_concat(VALUE self, VALUE ary)
     ID push;
     CONST_ID(push, "push");
     RB_GC_GUARD(ary);
-    return rb_funcall2(self, push, RARRAY_LEN(ary), RARRAY_PTR(ary));
+    return rb_funcall2(self, push, (int)RARRAY_LEN(ary), RARRAY_PTR(ary));
 }
 
 void
