@@ -14,6 +14,11 @@ Tue Jan 17 17:18:41 2012  Nobuyoshi Nakada  <nobu@ruby-lang.org>
 
 	* missing/setproctitle.c (ruby_init_setproctitle): changed prefix.
 
+Tue Jan 17 12:32:46 2012  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* gc.c (aligned_malloc, aligned_free): covered missing defined
+	  operators and fixes for cygwin.
+
 Mon Jan 16 16:41:53 2012  Nobuyoshi Nakada  <nobu@ruby-lang.org>
 
 	* lib/optparse.rb (Regexp): fix incorrect options when casting to
@@ -104,6 +109,17 @@ Mon Jan  9 23:37:43 2012  CHIKANAGA Tomoyuki  <nagachika00@gmail.com>
 	* ext/readline/readline.c (readline_attempted_completion_function):
 	  fix typos.
 
+Mon Jan  9 20:55:34 2012  Narihiro Nakamura  <authornari@gmail.com>
+
+	* gc.c : don't embed struct heaps_slot to a heap block because it
+	  can causes copy-on-write of memory page on heap block when its
+	  free_next is rewirted.
+
+Mon Jan  9 14:42:41 2012  Narihiro Nakamura  <authornari@gmail.com>
+
+	* gc.c: free_slots is changed Singly linked list. clear
+	  free_slots before sweep.
+
 Mon Jan  9 04:24:59 2012  NARUSE, Yui  <naruse@ruby-lang.org>
 
 	* gc.c (rb_objspace_free): global_List is allocated with xmalloc.
@@ -131,11 +147,51 @@ Mon Jan  9 04:24:59 2012  NARUSE, Yui  <naruse@ruby-lang.org>
 
 	* ext/readline/readline.c (username_completion_proc_call): ditto.
 
+Sun Jan  8 20:31:45 2012  Narihiro Nakamura  <narihiro@netlab.jp>
+
+	* gc.c : consider header bytes which are used by malloc.
+
+Sun Jan  8 11:54:43 2012  Narihiro Nakamura  <authornari@gmail.com>
+
+	* gc.c (aligned_free): support MinGW. Patch by Hiroshi Shirosaki.
+
+Sun Jan  8 11:43:05 2012  Narihiro Nakamura  <authornari@gmail.com>
+
+	* gc.c (slot_sweep): add a assertion instead of a debug print.
+
+Sun Jan  8 00:46:34 2012  KOSAKI Motohiro  <kosaki.motohiro@gmail.com>
+
+	* gc.c: get rid of implicit narrowing conversion.
+
+Sun Jan  8 00:10:10 2012  NARUSE, Yui  <naruse@ruby-lang.org>
+
+	* configure.in: check posix_memalign(3) and menalign(3).
+
+	* gc.c (aligned_malloc): use configure's result instead of
+	  _POSIX_C_SOURCE and _XOPEN_SOURCE because they can't be used
+	  to check availability at least on FreeBSD.
+
 Sat Jan  7 22:46:36 2012  Kouhei Sutou  <kou@cozmixng.org>
 
 	* lib/rexml/parsers/baseparser.rb: use private instead of _xxx
 	  method name. This is Ruby code not Python code.
 	  refs #5696
+
+Sat Jan  7 22:25:50 2012  Narihiro Nakamura  <authornari@gmail.com>
+
+	* gc.c: use Bitmap Marking algorithm to avoid copy-on-write of
+	  memory pages. See [ruby-dev:45085] [Feature #5839]
+	  [ruby-core:41916].
+
+	* include/ruby/ruby.h : FL_MARK rename to FL_RESERVED1.
+
+	* node.h : ditto.
+
+	* debug.c : ditto.
+
+	* object.c (rb_obj_clone): FL_MARK move to a bitmap.
+
+	* class.c (rb_singleton_class_clone): ditto.
 
 Tue Jan 03 23:57:37 2012  Ayumu AIZAWA  <ayumu.aizawa@gmail.com>
 
