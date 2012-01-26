@@ -59,6 +59,78 @@ Thu Jan 12 01:40:33 2012  NAKAMURA Usaku  <usa@ruby-lang.org>
 	* test/ruby/test_io.rb (TestIO#test_autoclose): Tempfile.new doesn't
 	  accept the block argument.
 
+Wed Jan 11 22:52:51 2012  CHIKANAGA Tomoyuki  <nagachika00@gmail.com>
+
+	* gc.c (ruby_mimmalloc): don't set allocated size to header.
+	  ruby_mimmalloc() doesn't increment allocated_size/allocations and
+	  decrement them in ruby_xfree() cause inconsistency.
+
+	* gc.c (ruby_xfree): don't decrement allocated_size/allocations if
+	  allocated size record is 0.
+
+Tue Jan 10 15:13:58 2012  NARUSE, Yui  <naruse@ruby-lang.org>
+
+	* ext/readline/readline.c (readline_attempted_completion_function):
+	  use rb_memerror().
+
+Tue Jan 10 12:44:11 2012  NARUSE, Yui  <naruse@ruby-lang.org>
+
+	* gc.c (ruby_mimmalloc): defined for objects need not rb_objspace,
+	  but should return pointer suitable for ruby_xfree;
+	  main vm and main thread.
+	  patched by Sokolov Yura. https://github.com/ruby/ruby/pull/79
+
+	* internal.h: ditto.
+
+	* vm.c (Init_BareVM): use ruby_mimmalloc.
+
+	* ext/dl/cfunc.c: #include <ruby/util.h>.
+
+	* ext/syslog/syslog.c: use xfree because it is allocated by
+	  ruby_strdup.
+
+Tue Jan 10 12:13:56 2012  Kazuhiro NISHIYAMA  <zn@mbf.nifty.com>
+
+	* ext/readline/readline.c (readline_attempted_completion_function):
+	  fix compile error.
+
+Tue Jan 10 10:41:11 2012  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* ext/readline/readline.c (readline_attempted_completion_function):
+	  empty completion result does not mean memory error.
+
+Mon Jan  9 23:37:43 2012  CHIKANAGA Tomoyuki  <nagachika00@gmail.com>
+
+	* ext/readline/readline.c (readline_attempted_completion_function):
+	  fix typos.
+
+Mon Jan  9 04:24:59 2012  NARUSE, Yui  <naruse@ruby-lang.org>
+
+	* gc.c (rb_objspace_free): global_List is allocated with xmalloc.
+	  patched by Sokolov Yura.  https://github.com/ruby/ruby/pull/78
+
+	* dln_find.c: remove useless replacement of free.
+
+	* ext/readline/readline.c (readline_attempted_completion_function):
+	  strings for readline must allocated with malloc.
+
+	* process.c (run_exec_dup2): use free; see also r20950.
+
+	* re.c (onig_new_with_source): use malloc for oniguruma.
+
+	* vm.c (ruby_vm_destruct): use free for VMs.
+
+	* vm.c (thread_free): use free for threads.
+
+Mon Jan  9 04:24:59 2012  NARUSE, Yui  <naruse@ruby-lang.org>
+
+	* dln_find.c: remove useless replacement of free.
+
+	* ext/readline/readline.c (filename_completion_proc_call):
+	  matches should use xfree.
+
+	* ext/readline/readline.c (username_completion_proc_call): ditto.
+
 Sat Jan  7 22:46:36 2012  Kouhei Sutou  <kou@cozmixng.org>
 
 	* lib/rexml/parsers/baseparser.rb: use private instead of _xxx

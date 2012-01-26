@@ -464,7 +464,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	struct gc_list *list, *next;
 	for (list = global_List; list; list = next) {
 	    next = list->next;
-	    free(list);
+	    xfree(list);
 	}
     }
     if (objspace->heap.sorted) {
@@ -814,8 +814,10 @@ vm_xfree(rb_objspace_t *objspace, void *ptr)
     size_t size;
     ptr = ((size_t *)ptr) - 1;
     size = ((size_t*)ptr)[0];
-    objspace->malloc_params.allocated_size -= size;
-    objspace->malloc_params.allocations--;
+    if (size) {
+	objspace->malloc_params.allocated_size -= size;
+	objspace->malloc_params.allocations--;
+    }
 #endif
 
     free(ptr);
@@ -885,6 +887,25 @@ ruby_xfree(void *x)
 	vm_xfree(&rb_objspace, x);
 }
 
+
+/* Mimic ruby_xmalloc, but need not rb_objspace.
+ * should return pointer suitable for ruby_xfree
+ */
+void *
+ruby_mimmalloc(size_t size)
+{
+    void *mem;
+#if CALC_EXACT_MALLOC_SIZE
+    size += sizeof(size_t);
+#endif
+    mem = malloc(size);
+#if CALC_EXACT_MALLOC_SIZE
+    /* set 0 for consistency of allocated_size/allocations */
+    ((size_t *)mem)[0] = 0;
+    mem = (size_t *)mem + 1;
+#endif
+    return mem;
+}
 
 /*
  *  call-seq:
