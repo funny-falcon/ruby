@@ -40,6 +40,8 @@
 #elif defined(HAVE_MEMALIGN)
 #include <malloc.h>
 #endif
+static void *aligned_malloc(size_t, size_t);
+static void aligned_free(void *);
 
 #ifdef HAVE_VALGRIND_MEMCHECK_H
 # include <valgrind/memcheck.h>
@@ -310,6 +312,9 @@ struct heaps_header {
     uintptr_t *bits;
 };
 
+static heaps_slot* heaps_slot_alloc();
+static void heaps_slot_free(heaps_slot *slot);
+
 struct sorted_heaps_slot {
     RVALUE *start;
     RVALUE *end;
@@ -475,7 +480,6 @@ rb_gc_set_params(void)
 static void gc_sweep(rb_objspace_t *);
 static void slot_sweep(rb_objspace_t *, struct heaps_slot *);
 static void gc_clear_mark_on_sweep_slots(rb_objspace_t *);
-static void aligned_free(void *);
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
@@ -497,15 +501,13 @@ rb_objspace_free(rb_objspace_t *objspace)
 	struct heaps_slot *list, *next;
 	for (list = objspace->heap.reserve_slots; list; list = next) {
 	    next = list->free_next;
-            aligned_free(list->membase);
-	    free(list);
+            heaps_slot_free(list);
 	}
     }
     if (objspace->heap.sorted) {
 	size_t i;
 	for (i = 0; i < heaps_used; ++i) {
-	    aligned_free(objspace->heap.sorted[i].slot->membase);
-            free(objspace->heap.sorted[i].slot);
+            heaps_slot_free(list);
 	}
 	free(objspace->heap.sorted);
 	heaps_used = 0;
@@ -1008,6 +1010,31 @@ rb_gc_unregister_address(VALUE *addr)
     }
 }
 
+static heaps_slot *
+heaps_slot_alloc()
+{
+    struct heaps_slot *slot = (struct heaps_slot *)malloc(SIZEOF_HEAPS_SLOT);
+    if (slot == 0) {
+        during_gc = 0;
+        rb_memerror();
+    }
+
+    slot->membase = (RVALUE*)aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
+    if (slot->membase == 0) {
+        free(slot);
+        during_gc = 0;
+        rb_memerror();
+    }
+    return slot;
+}
+
+static void
+heaps_slot_free(heaps_slot *slot)
+{
+    aligned_free(slot->membase);
+    free(slot);
+}
+
 static void
 allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
 {
@@ -1093,22 +1120,11 @@ assign_heap_slot(rb_objspace_t *objspace)
     if (objspace->heap.reserve_slots != NULL) {
 	slot = objspace->heap.reserve_slots;
 	objspace->heap.reserve_slots = slot->free_next;
-        p = slot->membase;
     }
     else {
-	slot = (struct heaps_slot *)malloc(SIZEOF_HEAPS_SLOT);
-	if (slot == 0) {
-	   during_gc = 0;
-	   rb_memerror();
-	}
-
-        p = (RVALUE*)aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
-        if (p == 0) {
-            free(slot);
-            during_gc = 0;
-            rb_memerror();
-        }
+        slot = heaps_slot_alloc();
     }
+    p = slot->membase;
     memset((void*)slot, 0, SIZEOF_HEAPS_SLOT);
 
     slot->next = heaps;
@@ -2086,8 +2102,7 @@ free_unused_heaps(rb_objspace_t *objspace)
                 h->free_next = objspace->heap.reserve_slots;
                 objspace->heap.reserve_slots = h;
             } else {
-                aligned_free(h->membase);
-                free(h);
+                heaps_slot_free(slot);
             }
             reserve = ~reserve;
 	    heaps_used--;
