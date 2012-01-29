@@ -522,7 +522,8 @@ rb_objspace_free(rb_objspace_t *objspace)
 #define REQUIRED_SIZE_BY_MALLOC (sizeof(size_t) * 5)
 #define HEAP_SIZE (HEAP_ALIGN - REQUIRED_SIZE_BY_MALLOC)
 
-#define HEAP_OBJ_LIMIT (unsigned int)(HEAP_SIZE/sizeof(struct RVALUE) - (sizeof(struct heaps_slot)/sizeof(struct RVALUE)+1))
+#define RVALUES_IN_HEAPS_HEADER ((sizeof(struct heaps_header) + sizeof(struct RVALUE) - 1) / sizeof(struct RVALUE))
+#define HEAP_OBJ_LIMIT (unsigned int)(HEAP_SIZE/sizeof(struct RVALUE) - RVALUES_IN_HEAPS_HEADER)
 #define HEAP_BITMAP_LIMIT (HEAP_OBJ_LIMIT/sizeof(uintptr_t)+1)
 #define SIZEOF_HEAPS_SLOT (sizeof(struct heaps_slot) + HEAP_BITMAP_LIMIT * sizeof(uintptr_t))
 
@@ -1115,13 +1116,7 @@ assign_heap_slot(rb_objspace_t *objspace)
     heaps = slot;
 
     membase = p;
-    p = (RVALUE*)((VALUE)p + sizeof(struct heaps_header));
-    if ((VALUE)p % sizeof(RVALUE) != 0) {
-       p = (RVALUE*)((VALUE)p + sizeof(RVALUE) - ((VALUE)p % sizeof(RVALUE)));
-       if ((HEAP_SIZE - HEAP_OBJ_LIMIT * sizeof(RVALUE)) < (size_t)((char*)p - (char*)membase)) {
-           objs--;
-       }
-    }
+    p = p + RVALUES_IN_HEAPS_HEADER;
 
     lo = 0;
     hi = heaps_used;
@@ -1486,7 +1481,7 @@ is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
     register size_t hi, lo, mid;
 
     if (p < lomem || p > himem) return FALSE;
-    if ((VALUE)p % sizeof(RVALUE) != 0) return FALSE;
+    if (((VALUE)p & HEAP_ALIGN_MASK) % sizeof(RVALUE) != 0) return FALSE;
 
     /* check if p looks like a pointer using bsearch*/
     lo = 0;
