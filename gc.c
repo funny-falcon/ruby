@@ -497,6 +497,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	struct heaps_slot *list, *next;
 	for (list = objspace->heap.reserve_slots; list; list = next) {
 	    next = list->free_next;
+            aligned_free(list->membase);
 	    free(list);
 	}
     }
@@ -1087,23 +1088,25 @@ assign_heap_slot(rb_objspace_t *objspace)
     size_t objs;
 
     objs = HEAP_OBJ_LIMIT;
-    p = (RVALUE*)aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
-    if (p == 0) {
-	during_gc = 0;
-	rb_memerror();
-    }
 
     if (objspace->heap.reserve_slots != NULL) {
 	slot = objspace->heap.reserve_slots;
 	objspace->heap.reserve_slots = slot->free_next;
+        p = slot->membase;
     }
     else {
 	slot = (struct heaps_slot *)malloc(SIZEOF_HEAPS_SLOT);
 	if (slot == 0) {
-	   aligned_free(p);
 	   during_gc = 0;
 	   rb_memerror();
 	}
+
+        p = (RVALUE*)aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
+        if (p == 0) {
+            free(slot);
+            during_gc = 0;
+            rb_memerror();
+        }
     }
     memset((void*)slot, 0, SIZEOF_HEAPS_SLOT);
 
@@ -1142,11 +1145,11 @@ assign_heap_slot(rb_objspace_t *objspace)
     objspace->heap.sorted[hi].slot = slot;
     objspace->heap.sorted[hi].start = p;
     objspace->heap.sorted[hi].end = (p + objs);
-    heaps->membase = membase;
-    heaps->slot = p;
-    heaps->limit = objs;
-    HEAP_HEADER(membase)->base = heaps;
-    HEAP_HEADER(membase)->bits = heaps->bits;
+    slot->membase = membase;
+    slot->slot = p;
+    slot->limit = objs;
+    HEAP_HEADER(membase)->base = slot;
+    HEAP_HEADER(membase)->bits = slot->bits;
     objspace->heap.free_num += objs;
     pend = p + objs;
     if (lomem == 0 || lomem > p) lomem = p;
@@ -1155,11 +1158,11 @@ assign_heap_slot(rb_objspace_t *objspace)
 
     while (p < pend) {
 	p->as.free.flags = 0;
-	p->as.free.next = heaps->freelist;
-	heaps->freelist = p;
+	p->as.free.next = slot->freelist;
+	slot->freelist = p;
 	p++;
     }
-    link_free_heap_slot(objspace, heaps);
+    link_free_heap_slot(objspace, slot);
 }
 
 static void
@@ -2078,14 +2081,20 @@ static void
 free_unused_heaps(rb_objspace_t *objspace)
 {
     size_t i, j;
+    int reserve = 0;
     register struct sorted_heaps_slot *ptr = objspace->heap.sorted + 1;
 
     for (i = j = 1; j < heaps_used; i++, ptr++) {
 	if (ptr->slot->limit == 0) {
             struct heaps_slot* h = ptr->slot;
-	    h->free_next = objspace->heap.reserve_slots;
-	    objspace->heap.reserve_slots = h;
-            aligned_free(h->membase);
+            if (reserve) {
+                h->free_next = objspace->heap.reserve_slots;
+                objspace->heap.reserve_slots = h;
+            } else {
+                aligned_free(h->membase);
+                free(h);
+            }
+            reserve = ~reserve;
 	    heaps_used--;
 	}
 	else {
