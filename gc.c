@@ -315,11 +315,27 @@ struct heaps_header {
 static heaps_slot* heaps_slot_alloc();
 static void heaps_slot_free(heaps_slot *slot);
 
-struct sorted_heaps_slot {
-    RVALUE *start;
-    RVALUE *end;
-    struct heaps_slot *slot;
-};
+#define SLOTSMAP_SIMPLE 1
+#define SLOTSMAP_48BIT  2
+#define SLOTSMAP_64BIT  3
+#if SIZEOF_VOIDP==8
+#  if defined(__x86_64__) || defined(__x86_64) || defined(_M_AMD64)
+#    define SLOTSMAP_TYPE SLOTSMAP_48BIT
+typedef uintptr_t **slotsmap_t;
+#  else
+#    define SLOTSMAP_TYPE SLOTSMAP_64BIT
+typedef uintptr_t ***slotsmap_t;
+#  endif
+#else
+#  define SLOTSMAP_TYPE SLOTSMAP_SIMPLE
+typedef uintptr_t *slotsmap_t;
+#endif
+
+static int  slotsmap_check(slotsmap_t, void*);
+static void slotsmap_set(slotsmap_t, void*);
+static void slotsmap_unset(slotsmap_t, void*);
+static void slotsmap_init(slotsmap_t*);
+static void slotsmap_release(slotsmap_t*);
 
 struct gc_list {
     VALUE *varptr;
@@ -342,10 +358,12 @@ typedef struct rb_objspace {
 	struct heaps_slot *ptr;
 	struct heaps_slot *sweep_slots;
 	struct heaps_slot *free_slots;
-	struct sorted_heaps_slot *sorted;
+	struct heaps_slot *defered_slots;
+        slotsmap_t         slotsmap;
 	size_t length;
 	size_t used;
 	struct heaps_slot *reserve_slots;
+        uintptr_t reserve;
 	RVALUE *range[2];
 	RVALUE *freed;
 	size_t live_num;
@@ -394,6 +412,8 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #define heaps			objspace->heap.ptr
 #define heaps_length		objspace->heap.length
 #define heaps_used		objspace->heap.used
+#define defereds		objspace->heap.defered_slots
+#define reserves		objspace->heap.reserve_slots
 #define lomem			objspace->heap.range[0]
 #define himem			objspace->heap.range[1]
 #define heaps_inc		objspace->heap.increment
@@ -481,6 +501,17 @@ static void gc_sweep(rb_objspace_t *);
 static void slot_sweep(rb_objspace_t *, struct heaps_slot *);
 static void gc_clear_mark_on_sweep_slots(rb_objspace_t *);
 
+static void
+release_list_of_heaps_slots(struct heaps_slot *slot)
+{
+    struct heaps_slot *next;
+    while(slot) {
+        next = slot->next;
+        heaps_slot_free(list);
+        slot = next;
+    }
+}
+
 void
 rb_objspace_free(rb_objspace_t *objspace)
 {
@@ -497,22 +528,16 @@ rb_objspace_free(rb_objspace_t *objspace)
 	    free(list);
 	}
     }
-    if (objspace->heap.reserve_slots) {
-	struct heaps_slot *list, *next;
-	for (list = objspace->heap.reserve_slots; list; list = next) {
-	    next = list->free_next;
-            heaps_slot_free(list);
-	}
-    }
-    if (objspace->heap.sorted) {
-	size_t i;
-	for (i = 0; i < heaps_used; ++i) {
-            heaps_slot_free(list);
-	}
-	free(objspace->heap.sorted);
-	heaps_used = 0;
-	heaps = 0;
-    }
+
+    release_list_of_heaps_slots(reserves);
+    release_list_of_heaps_slots(heaps);
+    release_list_of_heaps_slots(defereds);
+
+    reserves = 0;
+    defereds = 0;
+    heaps = 0;
+    heaps_used = 0;
+
     free(objspace);
 }
 #endif
@@ -1035,27 +1060,148 @@ heaps_slot_free(heaps_slot *slot)
     free(slot);
 }
 
-static void
-allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
+#if SIZEOF_VOIDP == 8
+#define MASK_16BIT (~(~0UL << 16))
+#define MASK_32BIT (~(~0UL << 32))
+#define NUM_IN_64BIT_MAP(p) ((uintptr_t)p >> 48)
+#define NUM_IN_48BIT_MAP(p) ((uintptr_t)p >> 32 & MASK_16BIT)
+#define NUM_IN_32BIT_MAP(p) (((uintptr_t)p & MASK_32BIT) >> HEAP_ALIGN_LOG)
+#else
+#define NUM_IN_32BIT_MAP(p) ((uintptr_t)p >> HEAP_ALIGN_LOG)
+#endif
+#define BITMAP_HEAPS_INDEX(p) (NUM_IN_32BIT_MAP(p) / (sizeof(uintptr_t) * 8))
+#define BITMAP_HEAPS_OFFSET(p) (NUM_IN_32BIT_MAP(p) & ((sizeof(uintptr_t) * 8)-1))
+
+static uintptr_t*
+slotsmap_alloc32bit()
 {
-    struct sorted_heaps_slot *p;
-    size_t size, add, i;
+    size_t size = (1 << (32 - HEAP_ALIGN_LOG)) / (sizeof(uintptr_t) * 8);
+    return (uintptr_t*) calloc(size, sizeof(uintptr_t));
+}
 
-    size = next_heaps_length*sizeof(struct sorted_heaps_slot);
-    add = next_heaps_length - heaps_used;
+#if SIZEOF_VOIDP==8
+static uintptr_t**
+slotsmap_alloc_prefixmap()
+{
+    return (uintptr_t**) calloc(1 << 16, sizeof(uintptr_t*));
+}
+#endif
 
-    if (heaps_used > 0) {
-	p = (struct sorted_heaps_slot *)realloc(objspace->heap.sorted, size);
-	if (p) objspace->heap.sorted = p;
-    }
-    else {
-	p = objspace->heap.sorted = (struct sorted_heaps_slot *)malloc(size);
-    }
+static void
+slotsmap_init(slotsmap_t *slotsmap)
+{
+#if SIZEOF_VOIDP==8
+    *slotsmap = (slotsmap_t) slotsmap_alloc_prefixmap();
+#else
+    *slotsmap = slotsmap_alloc32bit();
+#endif
+    assert(*slotsmap);
+}
 
-    if (p == 0) {
-	during_gc = 0;
-	rb_memerror();
+static void
+slotsmap_release(slotsmap_t *slotsmap)
+{
+    slotsmap_t sm = *slotsmap;
+#if SIZEOF_VOIDP==8
+    uintptr_t i;
+    uintptr_t **prefix48;
+#  if SLOTSMAP_TYPE == SLOTSMAP_64BIT
+    uintptr_t j;
+    for(j = 0; j < (1 << 16); j++) {
+        prefix48 = sm[j];
+#  else
+        prefix48 = sm;
+#  endif
+        for (i = 0; i < (1 << 16); i++) {
+            if (prefix48[i]) {
+                free(prefix48[i]);
+                prefix48[j] = 0;
+            }
+        }
+#  if SLOTSMAP_TYPE == SLOTSMAP_64BIT
+        free(prefix48);
+        sm[j] = 0;
     }
+#  endif
+#else
+    free(sm);
+    *slotsmap = 0;
+}
+
+static int
+slotsmap_check(slotsmap_t slotsmap, void* p)
+{
+    uintptr_t *bitmap;
+#if SIZEOF_VOIDP==8
+    uintptr_t **prefix48;
+#  if SLOTSMAP_TYPE == SLOTSMAP_64BIT
+    prefix48 = slotsmap[NUM_IN_64BIT_MAP(p)];
+    if (prefix48 == 0)
+        return 0;
+#  else
+    prefix48 = slotsmap;
+#  endif
+    bitmap = prefix48[NUM_IN_48BIT_MAP(p)];
+    if (bitmap == 0)
+        return 0;
+#else
+    bitmap = slotsmap;
+#endif
+    return bitmap[BITMAP_HEAPS_INDEX(p)] & ((uintptr_t)1 << BITMAP_HEAPS_OFFSET(p));
+}
+
+static void
+slotsmap_set(slotsmap_t slotsmap, void* p)
+{
+    uintptr_t *bitmap;
+#if SIZEOF_VOIDP==8
+    uintptr_t **prefix48;
+#  if SLOTSMAP_TYPE == SLOTSMAP_64BIT
+    prefix48 = slotsmap[NUM_IN_64BIT_MAP(p)];
+    if (prefix48 == 0) {
+        slotsmap[NUM_IN_64BIT_MAP(p)] = prefix48 = slotsmap_alloc_prefixmap();
+        if (prefix48 == 0) {
+            during_gc = 0;
+            rb_memerror();
+        }
+    }
+#  else
+    prefix48 = slotsmap;
+#  endif
+    bitmap = prefix48[NUM_IN_48BIT_MAP(p)];
+    if (bitmap == 0) {
+        bitmap = prefix48[NUM_IN_48BIT_MAP(p)] = slotsmap_alloc32bit();
+        if (bitmap == 0) {
+            during_gc = 0;
+            rb_memerror();
+        }
+    }
+#else
+    bitmap = slotsmap;
+#endif
+    bitmap[BITMAP_HEAPS_INDEX(p)] |= (uintptr_t)1 << BITMAP_HEAPS_OFFSET(p);
+}
+
+static void
+slotsmap_unset(slotsmap_t slotsmap, void* p)
+{
+    uintptr_t *bitmap;
+#if SIZEOF_VOIDP==8
+    uintptr_t **prefix48;
+#  if SLOTSMAP_TYPE == SLOTSMAP_64BIT
+    prefix48 = slotsmap[NUM_IN_64BIT_MAP(p)];
+    if (prefix48 == 0)
+        return;
+#  else
+    prefix48 = slotsmap;
+#  endif
+    bitmap = prefix48[NUM_IN_48BIT_MAP(p)];
+    if (bitmap == 0)
+        return;
+#else
+    bitmap = slotsmap;
+#endif
+    bitmap[BITMAP_HEAPS_INDEX(p)] &= ~((uintptr_t)1 << BITMAP_HEAPS_OFFSET(p));
 }
 
 static void *
@@ -1115,8 +1261,6 @@ assign_heap_slot(rb_objspace_t *objspace)
     size_t hi, lo, mid;
     size_t objs;
 
-    objs = HEAP_OBJ_LIMIT;
-
     if (objspace->heap.reserve_slots != NULL) {
 	slot = objspace->heap.reserve_slots;
 	objspace->heap.reserve_slots = slot->free_next;
@@ -1134,35 +1278,15 @@ assign_heap_slot(rb_objspace_t *objspace)
     membase = p;
     p = p + RVALUES_IN_HEAPS_HEADER;
 
-    lo = 0;
-    hi = heaps_used;
-    while (lo < hi) {
-	register RVALUE *mid_membase;
-	mid = (lo + hi) / 2;
-        mid_membase = objspace->heap.sorted[mid].slot->membase;
-	if (mid_membase < membase) {
-	    lo = mid + 1;
-	}
-	else if (mid_membase > membase) {
-	    hi = mid;
-	}
-	else {
-	    rb_bug("same heap slot is allocated: %p at %"PRIuVALUE, (void *)membase, (VALUE)mid);
-	}
-    }
-    if (hi < heaps_used) {
-	MEMMOVE(&objspace->heap.sorted[hi+1], &objspace->heap.sorted[hi], struct sorted_heaps_slot, heaps_used - hi);
-    }
-    objspace->heap.sorted[hi].slot = slot;
-    objspace->heap.sorted[hi].start = p;
-    objspace->heap.sorted[hi].end = (p + objs);
+    slotsmap_set(objspace->slotsmap, membase);
+
     slot->membase = membase;
     slot->slot = p;
-    slot->limit = objs;
+    slot->limit = HEAP_OBJ_LIMIT;
     HEAP_HEADER(membase)->base = slot;
     HEAP_HEADER(membase)->bits = slot->bits;
-    objspace->heap.free_num += objs;
-    pend = p + objs;
+    objspace->heap.free_num += HEAP_OBJ_LIMIT;
+    pend = p + HEAP_OBJ_LIMIT;
     if (lomem == 0 || lomem > p) lomem = p;
     if (himem < pend) himem = pend;
     heaps_used++;
@@ -1183,11 +1307,6 @@ add_heap_slots(rb_objspace_t *objspace, size_t add)
     size_t next_heaps_length;
 
     next_heaps_length = heaps_used + add;
-
-    if (next_heaps_length > heaps_length) {
-        allocate_sorted_heaps(objspace, next_heaps_length);
-        heaps_length = next_heaps_length;
-    }
 
     for (i = 0; i < add; i++) {
         assign_heap_slot(objspace);
@@ -1235,11 +1354,6 @@ set_heaps_increment(rb_objspace_t *objspace)
     }
 
     heaps_inc = next_heaps_length - heaps_used;
-
-    if (next_heaps_length > heaps_length) {
-	allocate_sorted_heaps(objspace, next_heaps_length);
-        heaps_length = next_heaps_length;
-    }
 }
 
 static int
@@ -1459,16 +1573,20 @@ gc_mark_all(rb_objspace_t *objspace)
 {
     RVALUE *p, *pend;
     size_t i;
+    struct heaps_slot *slot = heaps;
 
     init_mark_stack(objspace);
-    for (i = 0; i < heaps_used; i++) {
-	p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
-	while (p < pend) {
-	    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p) &&
-		p->as.basic.flags) {
+    while (slot) {
+        p = slot->slot;
+        for (i = RVALUES_IN_HEAPS_HEADER;
+             i < HEAP_OBJ_LIMIT + RVALUES_IN_HEAPS_HEADER;
+             i++, p++) {
+#define BITMAP_INDEX_L (i / (sizeof(uintptr_t) * 8))
+#define BITMAP_OFFSET_L (i & (sizeof(uintptr_t) * 8 - 1))
+#define MARKED_IN_BITMAP_L (slot->bits[BITMAP_INDEX_L] & ((uintptr_t)1 << BITMAP_OFFSET_L))
+	    if (MARKED_IN_BITMAP_L && p->as.basic.flags) {
 		gc_mark_children(objspace, (VALUE)p, 0);
 	    }
-	    p++;
 	}
     }
 }
@@ -1493,28 +1611,10 @@ static inline int
 is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
 {
     register RVALUE *p = RANY(ptr);
-    register struct sorted_heaps_slot *heap;
-    register size_t hi, lo, mid;
 
     if (p < lomem || p > himem) return FALSE;
     if (((VALUE)p & HEAP_ALIGN_MASK) % sizeof(RVALUE) != 0) return FALSE;
-
-    /* check if p looks like a pointer using bsearch*/
-    lo = 0;
-    hi = heaps_used;
-    while (lo < hi) {
-	mid = (lo + hi) / 2;
-	heap = &objspace->heap.sorted[mid];
-	if (heap->start <= p) {
-	    if (p < heap->end)
-		return TRUE;
-	    lo = mid + 1;
-	}
-	else {
-	    hi = mid;
-	}
-    }
-    return FALSE;
+    return slotsmap_check(p);
 }
 
 static void
@@ -2089,7 +2189,7 @@ unlink_heap_slot(rb_objspace_t *objspace, struct heaps_slot *slot)
 }
 
 static void
-free_unused_heaps(rb_objspace_t *objspace)
+free_unused_heap(rb_objspace_t *objspace, )
 {
     size_t i, j;
     int reserve = 0;
@@ -2132,7 +2232,7 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
     int deferred;
     uintptr_t *bits;
 
-    p = sweep_slot->slot; pend = p + sweep_slot->limit;
+    p = sweep_slot->slot; pend = p + HEAP_OBJ_LIMIT;
     bits = GET_HEAP_BITMAP(p);
     while (p < pend) {
         if ((!(MARKED_IN_BITMAP(bits, p))) && BUILTIN_TYPE(p) != T_ZOMBIE) {
@@ -2163,7 +2263,7 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
         p++;
     }
     gc_clear_slot_bits(sweep_slot);
-    if (final_num + free_num == sweep_slot->limit &&
+    if (final_num + free_num == HEAP_OBJ_LIMIT &&
         objspace->heap.free_num > objspace->heap.do_heap_free) {
         RVALUE *pp;
 
@@ -2733,11 +2833,13 @@ Init_heap(void)
 }
 
 static VALUE
-lazy_sweep_enable(void)
+lazy_sweep_enable(VALUE arg)
 {
     rb_objspace_t *objspace = &rb_objspace;
+    struct each_obj_args *args = (struct each_obj_args *)arg;
 
     objspace->flags.dont_lazy_sweep = FALSE;
+    xfree(args->current_heaps);
     return Qnil;
 }
 
@@ -2746,6 +2848,8 @@ typedef int each_obj_callback(void *, void *, size_t, void *);
 struct each_obj_args {
     each_obj_callback *callback;
     void *data;
+    size_t current_heaps_count;
+    struct heaps_slot** current_heaps;
 };
 
 static VALUE
@@ -2759,17 +2863,13 @@ objspace_each_objects(VALUE arg)
     volatile VALUE v;
 
     i = 0;
-    while (i < heaps_used) {
-	while (0 < i && (uintptr_t)membase < (uintptr_t)objspace->heap.sorted[i-1].slot->membase)
-	    i--;
-	while (i < heaps_used && (uintptr_t)objspace->heap.sorted[i].slot->membase <= (uintptr_t)membase)
-	    i++;
-	if (heaps_used <= i)
-	  break;
-	membase = objspace->heap.sorted[i].slot->membase;
-
-	pstart = objspace->heap.sorted[i].slot->slot;
-	pend = pstart + objspace->heap.sorted[i].slot->limit;
+    while (i < args->current_heaps_count) {
+        struct heaps_slot *slot = args->current_heaps[i];
+        if (!slotsmap_check(objspace->slotsmap, slot))
+            continue;
+	membase = slot->membase;
+        pstart = slot->slot;
+	pend = pstart + HEAP_OBJ_LIMIT;
 
 	for (; pstart != pend; pstart++) {
 	    if (pstart->as.basic.flags) {
@@ -2828,6 +2928,8 @@ void
 rb_objspace_each_objects(each_obj_callback *callback, void *data)
 {
     struct each_obj_args args;
+    struct heaps_slot *slot;
+    size_t i;
     rb_objspace_t *objspace = &rb_objspace;
 
     rest_sweep(objspace);
@@ -2835,7 +2937,13 @@ rb_objspace_each_objects(each_obj_callback *callback, void *data)
 
     args.callback = callback;
     args.data = data;
-    rb_ensure(objspace_each_objects, (VALUE)&args, lazy_sweep_enable, Qnil);
+    args.current_heaps_count = heaps_used;
+    args.current_heaps = ALLOC_N((struct heaps_slot*), heaps_used);
+    for(i = 0, slot = heaps; i < heaps_used; i++, slot = slot->next) {
+        args.current_heaps[i] = slot;
+    }
+    
+    rb_ensure(objspace_each_objects, (VALUE)&args, lazy_sweep_enable, (VALUE)&args);
 }
 
 struct os_each_struct {
@@ -3141,6 +3249,7 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 {
     RVALUE *p, *pend;
     RVALUE *final_list = 0;
+    struct heaps_slot *slot;
     size_t i;
 
     /* run finalizers */
@@ -3174,8 +3283,8 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
     during_gc++;
 
     /* run data object's finalizers */
-    for (i = 0; i < heaps_used; i++) {
-	p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
+    for (slot = heaps; slot; slot = slot->next) {
+	p = slot->slot; pend = p + HEAP_OBJ_LIMIT;
 	while (p < pend) {
 	    if (BUILTIN_TYPE(p) == T_DATA &&
 		DATA_PTR(p) && RANY(p)->as.data.dfree &&
@@ -3238,7 +3347,7 @@ is_dead_object(rb_objspace_t *objspace, VALUE ptr)
     if (!is_lazy_sweeping(objspace) || MARKED_IN_BITMAP(GET_HEAP_BITMAP(ptr), ptr))
 	return FALSE;
     while (slot) {
-	if ((VALUE)slot->slot <= ptr && ptr < (VALUE)(slot->slot + slot->limit))
+	if ((VALUE)slot->slot <= ptr && ptr < (VALUE)(slot->slot + HEAP_OBJ_LIMIT))
 	    return TRUE;
 	slot = slot->next;
     }
@@ -3405,6 +3514,7 @@ static VALUE
 count_objects(int argc, VALUE *argv, VALUE os)
 {
     rb_objspace_t *objspace = &rb_objspace;
+    struct heaps_slot *slot;
     size_t counts[T_MASK+1];
     size_t freed = 0;
     size_t total = 0;
@@ -3420,10 +3530,9 @@ count_objects(int argc, VALUE *argv, VALUE os)
         counts[i] = 0;
     }
 
-    for (i = 0; i < heaps_used; i++) {
+    for (slot = heaps; slot; slot++) {
         RVALUE *p, *pend;
-
-        p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
+        p = slot->slot; pend = p + HEAP_OBJ_LIMIT;
         for (;p < pend; p++) {
             if (p->as.basic.flags) {
                 counts[BUILTIN_TYPE(p)]++;
@@ -3432,21 +3541,36 @@ count_objects(int argc, VALUE *argv, VALUE os)
                 freed++;
             }
         }
-        total += objspace->heap.sorted[i].slot->limit;
+        total += HEAP_OBJ_LIMIT;
+    }
+
+    /* XXX should we scan defered objects? */
+    for (slot = defereds; slot; slot++) {
+	RVALUE *p, *pend;
+	p = slot->slot; pend = p + HEAP_OBJ_LIMIT;
+	for (;p < pend; p++) {
+	    if (p->as.basic.flags) {
+	        counts[BUILTIN_TYPE(p)]++;
+	    }
+	    else {
+	        freed++;
+	    }
+	}
+	total += slot->limit; /* XXX should here be HEAP_OBJ_LIMIT? */
     }
 
     if (hash == Qnil) {
-        hash = rb_hash_new();
+	hash = rb_hash_new();
     }
     else if (!RHASH_EMPTY_P(hash)) {
-        st_foreach(RHASH_TBL(hash), set_zero, hash);
+	st_foreach(RHASH_TBL(hash), set_zero, hash);
     }
     rb_hash_aset(hash, ID2SYM(rb_intern("TOTAL")), SIZET2NUM(total));
     rb_hash_aset(hash, ID2SYM(rb_intern("FREE")), SIZET2NUM(freed));
 
     for (i = 0; i <= T_MASK; i++) {
-        VALUE type;
-        switch (i) {
+	VALUE type;
+	switch (i) {
 #define COUNT_TYPE(t) case (t): type = ID2SYM(rb_intern(#t)); break;
 	    COUNT_TYPE(T_NONE);
 	    COUNT_TYPE(T_OBJECT);
@@ -3474,10 +3598,10 @@ count_objects(int argc, VALUE *argv, VALUE os)
 	    COUNT_TYPE(T_ICLASS);
 	    COUNT_TYPE(T_ZOMBIE);
 #undef COUNT_TYPE
-          default:              type = INT2NUM(i); break;
-        }
-        if (counts[i])
-            rb_hash_aset(hash, type, SIZET2NUM(counts[i]));
+	  default:              type = INT2NUM(i); break;
+	}
+	if (counts[i])
+	    rb_hash_aset(hash, type, SIZET2NUM(counts[i]));
     }
 
     return hash;
@@ -3531,12 +3655,12 @@ gc_stat(int argc, VALUE *argv, VALUE self)
     VALUE hash;
 
     if (rb_scan_args(argc, argv, "01", &hash) == 1) {
-        if (!RB_TYPE_P(hash, T_HASH))
-            rb_raise(rb_eTypeError, "non-hash given");
+	if (!RB_TYPE_P(hash, T_HASH))
+	    rb_raise(rb_eTypeError, "non-hash given");
     }
 
     if (hash == Qnil) {
-        hash = rb_hash_new();
+	hash = rb_hash_new();
     }
 
     rest_sweep(objspace);
@@ -3627,21 +3751,21 @@ gc_profile_record_get(void)
 
     for (i =0; i < objspace->profile.count; i++) {
 	prof = rb_hash_new();
-        rb_hash_aset(prof, ID2SYM(rb_intern("GC_TIME")), DBL2NUM(objspace->profile.record[i].gc_time));
-        rb_hash_aset(prof, ID2SYM(rb_intern("GC_INVOKE_TIME")), DBL2NUM(objspace->profile.record[i].gc_invoke_time));
-        rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_USE_SIZE")), SIZET2NUM(objspace->profile.record[i].heap_use_size));
-        rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_TOTAL_SIZE")), SIZET2NUM(objspace->profile.record[i].heap_total_size));
-        rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_TOTAL_OBJECTS")), SIZET2NUM(objspace->profile.record[i].heap_total_objects));
-        rb_hash_aset(prof, ID2SYM(rb_intern("GC_IS_MARKED")), objspace->profile.record[i].is_marked);
+	rb_hash_aset(prof, ID2SYM(rb_intern("GC_TIME")), DBL2NUM(objspace->profile.record[i].gc_time));
+	rb_hash_aset(prof, ID2SYM(rb_intern("GC_INVOKE_TIME")), DBL2NUM(objspace->profile.record[i].gc_invoke_time));
+	rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_USE_SIZE")), SIZET2NUM(objspace->profile.record[i].heap_use_size));
+	rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_TOTAL_SIZE")), SIZET2NUM(objspace->profile.record[i].heap_total_size));
+	rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_TOTAL_OBJECTS")), SIZET2NUM(objspace->profile.record[i].heap_total_objects));
+	rb_hash_aset(prof, ID2SYM(rb_intern("GC_IS_MARKED")), objspace->profile.record[i].is_marked);
 #if GC_PROFILE_MORE_DETAIL
-        rb_hash_aset(prof, ID2SYM(rb_intern("GC_MARK_TIME")), DBL2NUM(objspace->profile.record[i].gc_mark_time));
-        rb_hash_aset(prof, ID2SYM(rb_intern("GC_SWEEP_TIME")), DBL2NUM(objspace->profile.record[i].gc_sweep_time));
-        rb_hash_aset(prof, ID2SYM(rb_intern("ALLOCATE_INCREASE")), SIZET2NUM(objspace->profile.record[i].allocate_increase));
-        rb_hash_aset(prof, ID2SYM(rb_intern("ALLOCATE_LIMIT")), SIZET2NUM(objspace->profile.record[i].allocate_limit));
-        rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_USE_SLOTS")), SIZET2NUM(objspace->profile.record[i].heap_use_slots));
-        rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_LIVE_OBJECTS")), SIZET2NUM(objspace->profile.record[i].heap_live_objects));
-        rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_FREE_OBJECTS")), SIZET2NUM(objspace->profile.record[i].heap_free_objects));
-        rb_hash_aset(prof, ID2SYM(rb_intern("HAVE_FINALIZE")), objspace->profile.record[i].have_finalize);
+	rb_hash_aset(prof, ID2SYM(rb_intern("GC_MARK_TIME")), DBL2NUM(objspace->profile.record[i].gc_mark_time));
+	rb_hash_aset(prof, ID2SYM(rb_intern("GC_SWEEP_TIME")), DBL2NUM(objspace->profile.record[i].gc_sweep_time));
+	rb_hash_aset(prof, ID2SYM(rb_intern("ALLOCATE_INCREASE")), SIZET2NUM(objspace->profile.record[i].allocate_increase));
+	rb_hash_aset(prof, ID2SYM(rb_intern("ALLOCATE_LIMIT")), SIZET2NUM(objspace->profile.record[i].allocate_limit));
+	rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_USE_SLOTS")), SIZET2NUM(objspace->profile.record[i].heap_use_slots));
+	rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_LIVE_OBJECTS")), SIZET2NUM(objspace->profile.record[i].heap_live_objects));
+	rb_hash_aset(prof, ID2SYM(rb_intern("HEAP_FREE_OBJECTS")), SIZET2NUM(objspace->profile.record[i].heap_free_objects));
+	rb_hash_aset(prof, ID2SYM(rb_intern("HAVE_FINALIZE")), objspace->profile.record[i].have_finalize);
 #endif
 	rb_ary_push(gc_profile, prof);
     }
@@ -3671,12 +3795,12 @@ gc_profile_result(void)
     record = gc_profile_record_get();
     if (objspace->profile.run && objspace->profile.count) {
 	result = rb_sprintf("GC %d invokes.\n", NUM2INT(gc_count(0)));
-        index = 1;
+	index = 1;
 	rb_str_cat2(result, "Index    Invoke Time(sec)       Use Size(byte)     Total Size(byte)         Total Object                    GC Time(ms)\n");
 	for (i = 0; i < (int)RARRAY_LEN(record); i++) {
 	    VALUE r = RARRAY_PTR(record)[i];
 #if !GC_PROFILE_MORE_DETAIL
-            if (rb_hash_aref(r, ID2SYM(rb_intern("GC_IS_MARKED")))) {
+	    if (rb_hash_aref(r, ID2SYM(rb_intern("GC_IS_MARKED")))) {
 #endif
 	    rb_str_catf(result, "%5d %19.3f %20"PRIuSIZE" %20"PRIuSIZE" %20"PRIuSIZE" %30.20f\n",
 			index++, NUM2DBL(rb_hash_aref(r, ID2SYM(rb_intern("GC_INVOKE_TIME")))),
@@ -3685,14 +3809,14 @@ gc_profile_result(void)
 			(size_t)NUM2SIZET(rb_hash_aref(r, ID2SYM(rb_intern("HEAP_TOTAL_OBJECTS")))),
 			NUM2DBL(rb_hash_aref(r, ID2SYM(rb_intern("GC_TIME"))))*1000);
 #if !GC_PROFILE_MORE_DETAIL
-            }
+	    }
 #endif
 	}
 #if GC_PROFILE_MORE_DETAIL
 	rb_str_cat2(result, "\n\n");
 	rb_str_cat2(result, "More detail.\n");
 	rb_str_cat2(result, "Index Allocate Increase    Allocate Limit  Use Slot  Have Finalize             Mark Time(ms)            Sweep Time(ms)\n");
-        index = 1;
+	index = 1;
 	for (i = 0; i < (int)RARRAY_LEN(record); i++) {
 	    VALUE r = RARRAY_PTR(record)[i];
 	    rb_str_catf(result, "%5d %17"PRIuSIZE" %17"PRIuSIZE" %9"PRIuSIZE" %14s %25.20f %25.20f\n",
