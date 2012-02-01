@@ -92,8 +92,8 @@ st_realloc_bins(st_table_entry **bins, st_index_t newsize, st_index_t oldsize)
 }
 
 /* preparation for possible packing improvements */
-#define PKEY_POS(i, num_bins) ((num_bins)-(i)*2-2)
-#define PVAL_POS(i, num_bins) ((num_bins)-(i)*2-1)
+#define PKEY_POS(i, num_bins) (MAX_PACKED_HASH+(i)*2)
+#define PVAL_POS(i, num_bins) (MAX_PACKED_HASH+(i)*2+1)
 #define PHASH_POS(i, num_bins) (i)
 #define PKEY(table, i) (st_data_t)(table)->bins[PKEY_POS(i, (table)->num_bins)]
 #define PVAL(table, i) (st_data_t)(table)->bins[PVAL_POS(i, (table)->num_bins)]
@@ -107,9 +107,9 @@ remove_packed_entry(st_table *table, st_index_t i)
 {
     table->num_entries--;
     if (i < table->num_entries) {
-        st_index_t mv = table->num_entries - i, upto = table->num_bins - 2*table->num_entries;
+        st_index_t mv = table->num_entries - i, downto = MAX_PACKED_HASH + i * 2;
         memmove(table->bins + i, table->bins + i + 1, sizeof(st_table_entry *) * mv);
-        memmove(table->bins + upto, table->bins + upto - 2,
+        memmove(table->bins + downto, table->bins + downto + 2,
                 sizeof(st_table_entry *) * mv * 2);
     }
 }
