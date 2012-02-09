@@ -666,7 +666,7 @@ rb_waitpid(rb_pid_t pid, int *st, int flags)
 	    struct wait_data data;
 	    data.pid = (rb_pid_t)-1;
 	    data.status = -1;
-	    st_foreach(pid_tbl, wait_each, (st_data_t)&data);
+	    st_foreach_nocheck(pid_tbl, wait_each, (st_data_t)&data);
 	    if (data.status != -1) {
 		rb_last_status_set(data.status, data.pid);
 		return data.pid;
