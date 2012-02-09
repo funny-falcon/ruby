@@ -873,11 +873,11 @@ st_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
     if (table->entries_packed) {
         for (i = 0; i < table->num_entries; i++) {
             st_index_t j;
-            st_data_t key, val;
-            key = PKEY(table, i);
-            val = PVAL(table, i);
-            retval = (*func)(key, val, arg);
+            st_packed_entry packed;
+            packed = PACKED_ENT(table, i);
+            retval = (*func)(packed.key, packed.val, arg);
 	    if (!table->entries_packed) {
+		st_index_t key = packed.key;
 		FIND_ENTRY(table, ptr, key, i);
 		if (retval == ST_CHECK) {
 		    if (!ptr) goto deleted;
@@ -888,7 +888,7 @@ st_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
             switch (retval) {
 	      case ST_CHECK:	/* check if hash is modified during iteration */
                 for (j = 0; j < table->num_entries; j++) {
-                    if (PKEY(table, j) == key)
+                    if (PKEY(table, j) == packed.key)
                         break;
                 }
                 if (j == table->num_entries) {
