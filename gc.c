@@ -1604,7 +1604,7 @@ mark_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
     if (!tbl || tbl->num_entries == 0) return;
     arg.objspace = objspace;
     arg.lev = lev;
-    st_foreach(tbl, mark_entry, (st_data_t)&arg);
+    st_foreach_nocheck(tbl, mark_entry, (st_data_t)&arg);
 }
 
 static int
@@ -1622,7 +1622,7 @@ mark_set(rb_objspace_t *objspace, st_table *tbl, int lev)
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
-    st_foreach(tbl, mark_key, (st_data_t)&arg);
+    st_foreach_nocheck(tbl, mark_key, (st_data_t)&arg);
 }
 
 void
@@ -1647,7 +1647,7 @@ mark_hash(rb_objspace_t *objspace, st_table *tbl, int lev)
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
-    st_foreach(tbl, mark_keyvalue, (st_data_t)&arg);
+    st_foreach_nocheck(tbl, mark_keyvalue, (st_data_t)&arg);
 }
 
 void
@@ -1700,7 +1700,7 @@ mark_m_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
-    st_foreach(tbl, mark_method_entry_i, (st_data_t)&arg);
+    st_foreach_nocheck(tbl, mark_method_entry_i, (st_data_t)&arg);
 }
 
 static int
@@ -1713,7 +1713,7 @@ free_method_entry_i(ID key, rb_method_entry_t *me, st_data_t data)
 void
 rb_free_m_table(st_table *tbl)
 {
-    st_foreach(tbl, free_method_entry_i, 0);
+    st_foreach_nocheck(tbl, free_method_entry_i, 0);
     st_free_table(tbl);
 }
 
@@ -1733,7 +1733,7 @@ mark_const_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
-    st_foreach(tbl, mark_const_entry_i, (st_data_t)&arg);
+    st_foreach_nocheck(tbl, mark_const_entry_i, (st_data_t)&arg);
 }
 
 static int
@@ -1746,7 +1746,7 @@ free_const_entry_i(ID key, rb_const_entry_t *ce, st_data_t data)
 void
 rb_free_const_table(st_table *tbl)
 {
-    st_foreach(tbl, free_const_entry_i, 0);
+    st_foreach_nocheck(tbl, free_const_entry_i, 0);
     st_free_table(tbl);
 }
 
@@ -3205,13 +3205,13 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 	/* because mark will not be removed */
 	finalize_deferred(objspace);
 	mark_tbl(objspace, finalizer_table, 0);
-	st_foreach(finalizer_table, chain_finalized_object,
+	st_foreach_nocheck(finalizer_table, chain_finalized_object,
 		   (st_data_t)&deferred_final_list);
     } while (deferred_final_list);
     /* force to run finalizer */
     while (finalizer_table->num_entries) {
 	struct force_finalize_list *list = 0;
-	st_foreach(finalizer_table, force_chain_object, (st_data_t)&list);
+	st_foreach_nocheck(finalizer_table, force_chain_object, (st_data_t)&list);
 	while (list) {
 	    struct force_finalize_list *curr = list;
 	    st_data_t obj = (st_data_t)curr->obj;
@@ -3492,7 +3492,7 @@ count_objects(int argc, VALUE *argv, VALUE os)
         hash = rb_hash_new();
     }
     else if (!RHASH_EMPTY_P(hash)) {
-        st_foreach(RHASH_TBL(hash), set_zero, hash);
+        st_foreach_nocheck(RHASH_TBL(hash), set_zero, hash);
     }
     rb_hash_aset(hash, ID2SYM(rb_intern("TOTAL")), SIZET2NUM(total));
     rb_hash_aset(hash, ID2SYM(rb_intern("FREE")), SIZET2NUM(freed));
