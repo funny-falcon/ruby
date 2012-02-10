@@ -473,7 +473,7 @@ void
 rb_gc_mark_global_tbl(void)
 {
     if (rb_global_tbl)
-        st_foreach_safe(rb_global_tbl, mark_global_entry, 0);
+        st_foreach_nocheck(rb_global_tbl, mark_global_entry, 0);
 }
 
 static ID
@@ -765,7 +765,7 @@ rb_f_global_variables(void)
     char buf[2];
     int i;
 
-    st_foreach_safe(rb_global_tbl, gvar_i, ary);
+    st_foreach_nocheck(rb_global_tbl, gvar_i, ary);
     buf[0] = '$';
     for (i = 1; i <= 9; ++i) {
 	buf[1] = (char)(i + '0');
@@ -923,7 +923,7 @@ static int
 givar_i(VALUE obj, st_table *tbl)
 {
     if (rb_special_const_p(obj)) {
-	st_foreach_safe(tbl, givar_mark_i, 0);
+	st_foreach_nocheck(tbl, givar_mark_i, 0);
     }
     return ST_CONTINUE;
 }
@@ -933,7 +933,7 @@ rb_mark_generic_ivar_tbl(void)
 {
     if (!generic_iv_tbl) return;
     if (special_generic_ivar == 0) return;
-    st_foreach_safe(generic_iv_tbl, givar_i, 0);
+    st_foreach_nocheck(generic_iv_tbl, givar_i, 0);
 }
 
 void

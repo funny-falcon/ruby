@@ -125,6 +125,7 @@ int st_insert2(st_table *, st_data_t, st_data_t, st_data_t (*)(st_data_t));
 int st_lookup(st_table *, st_data_t, st_data_t *);
 int st_get_key(st_table *, st_data_t, st_data_t *);
 int st_foreach(st_table *, int (*)(ANYARGS), st_data_t);
+int st_foreach_nocheck(st_table *, int (*)(ANYARGS), st_data_t);
 int st_reverse_foreach(st_table *, int (*)(ANYARGS), st_data_t);
 void st_add_direct(st_table *, st_data_t, st_data_t);
 void st_free_table(st_table *);

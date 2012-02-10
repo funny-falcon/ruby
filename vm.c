@@ -1570,7 +1570,7 @@ rb_vm_mark(void *ptr)
     if (ptr) {
 	rb_vm_t *vm = ptr;
 	if (vm->living_threads) {
-	    st_foreach(vm->living_threads, vm_mark_each_thread_func, 0);
+	    st_foreach_nocheck(vm->living_threads, vm_mark_each_thread_func, 0);
 	}
 	RUBY_MARK_UNLESS_NULL(vm->thgroup_default);
 	RUBY_MARK_UNLESS_NULL(vm->mark_object_ary);
