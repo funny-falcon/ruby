@@ -520,8 +520,7 @@ st_insert(register st_table *table, register st_data_t key, st_data_t value)
     }
 
     hash_val = do_hash(key, table);
-    bin_pos = hash_val % table->num_bins;
-    ptr = find_entry(table, key, hash_val, bin_pos);
+    FIND_ENTRY(table, ptr, hash_val, bin_pos);
 
     if (ptr == 0) {
 	add_direct(table, key, value, hash_val, bin_pos);
@@ -552,8 +551,7 @@ st_insert2(register st_table *table, register st_data_t key, st_data_t value,
     }
 
     hash_val = do_hash(key, table);
-    bin_pos = hash_val % table->num_bins;
-    ptr = find_entry(table, key, hash_val, bin_pos);
+    FIND_ENTRY(table, ptr, hash_val, bin_pos);
 
     if (ptr == 0) {
 	key = (*func)(key);
@@ -748,8 +746,7 @@ st_cleanup_safe(st_table *table, st_data_t never)
 	}
 	for (j = i; ++i < table->num_entries;) {
 	    if (PKEY(table, i) == never) continue;
-	    PKEY_SET(table, j,  PKEY(table, i));
-	    PVAL_SET(table, j,  PVAL(table, i));
+	    PACKED_ENT(table, j) = PACKED_ENT(table, i);
 	    j++;
 	}
 	table->num_entries = j;
@@ -781,11 +778,11 @@ st_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
     if (table->entries_packed) {
         for (i = 0; i < table->num_entries; i++) {
             st_index_t j;
-            st_data_t key, val;
-            key = PKEY(table, i);
-            val = PVAL(table, i);
-            retval = (*func)(key, val, arg);
+            st_packed_entry packed;
+            packed = PACKED_ENT(table, i);
+            retval = (*func)(packed.key, packed.val, arg);
 	    if (!table->entries_packed) {
+		st_index_t key = packed.key;
 		FIND_ENTRY(table, ptr, key, i);
 		if (retval == ST_CHECK) {
 		    if (!ptr) goto deleted;
@@ -796,7 +793,7 @@ st_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
             switch (retval) {
 	      case ST_CHECK:	/* check if hash is modified during iteration */
                 for (j = 0; j < table->num_entries; j++) {
-                    if (PKEY(table, j) == key)
+                    if (PKEY(table, j) == packed.key)
                         break;
                 }
                 if (j == table->num_entries) {
