@@ -38,7 +38,7 @@
 #include <windows.h>
 #elif defined POOL_ALLOC_API
 #if   defined(HAVE_POSIX_MEMALIGN)
-#elif defined(HAVE_MEMALIGN)
+#elif defined(HAVE_MEMALIGN) || defined(HAVE_VALLOC)
 #include <malloc.h>
 #endif
 #endif

@@ -8,7 +8,14 @@
  */
 
 #if POOL_ALLOC_PART == 1
-#define DEFAULT_POOL_SIZE 8192
+#ifdef USE_PAGESIZE_LOG
+#define DEFAULT_POOL_SIZE_LOG USE_PAGESIZE_LOG
+#else
+#define DEFAULT_POOL_SIZE_LOG 13
+#endif
+#define DEFAULT_POOL_SIZE (1UL << DEFAULT_POOL_SIZE_LOG)
+#define DEFAULT_POOL_SIZE_MASK ~(DEFAULT_POOL_SIZE - 1)
+
 typedef unsigned int pool_holder_counter;
 
 typedef struct pool_entry_list pool_entry_list;
@@ -51,6 +58,8 @@ aligned_malloc(size_t alignment, size_t size)
     }
 #elif defined(HAVE_MEMALIGN)
     res = memalign(alignment, size);
+#elif defined(HAVE_VALLOC)
+    res = valloc(size);
 #else
 #error no memalign function
 #endif
@@ -121,7 +130,7 @@ pool_holder_unchaing(pool_header *header, pool_holder *holder)
 static inline pool_holder *
 entry_holder(void **entry)
 {
-    return (pool_holder*)(((uintptr_t)entry) & ~(DEFAULT_POOL_SIZE - 1));
+    return (pool_holder*)(((uintptr_t)entry) & DEFAULT_POOL_SIZE_MASK);
 }
 
 static inline void
