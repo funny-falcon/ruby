@@ -152,7 +152,7 @@ syck_emitter_st_free( SyckEmitter *e )
      */
     if ( e->anchors != NULL )
     {
-        st_foreach( e->anchors, syck_st_free_anchors, 0 );
+        st_foreach_nocheck( e->anchors, syck_st_free_anchors, 0 );
         st_free_table( e->anchors );
         e->anchors = NULL;
     }

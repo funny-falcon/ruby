@@ -185,7 +185,7 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 	    fs.type = type;
 	    fs.load_path = load_path ? load_path : rb_get_load_path();
 	    fs.result = 0;
-	    st_foreach(loading_tbl, loaded_feature_path_i, (st_data_t)&fs);
+	    st_foreach_nocheck(loading_tbl, loaded_feature_path_i, (st_data_t)&fs);
 	    if ((f = fs.result) != 0) {
 		if (fn) *fn = f;
 		goto loading;

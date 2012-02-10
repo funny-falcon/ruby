@@ -2197,7 +2197,7 @@ rb_thread_keys(VALUE self)
     GetThreadPtr(self, th);
 
     if (th->local_storage) {
-	st_foreach(th->local_storage, thread_keys_i, ary);
+	st_foreach_nocheck(th->local_storage, thread_keys_i, ary);
     }
     return ary;
 }
@@ -3068,7 +3068,7 @@ clear_coverage(void)
 {
     VALUE coverages = rb_get_coverages();
     if (RTEST(coverages)) {
-	st_foreach(RHASH_TBL(coverages), clear_coverage_i, 0);
+	st_foreach_nocheck(RHASH_TBL(coverages), clear_coverage_i, 0);
     }
 }
 
@@ -3213,7 +3213,7 @@ thgroup_list(VALUE group)
 
     param.ary = ary;
     param.group = group;
-    st_foreach(GET_THREAD()->vm->living_threads, thgroup_list_i, (st_data_t) & param);
+    st_foreach_nocheck(GET_THREAD()->vm->living_threads, thgroup_list_i, (st_data_t) & param);
     return ary;
 }
 
@@ -4119,7 +4119,7 @@ set_threads_event_flags_i(st_data_t key, st_data_t val, st_data_t flag)
 static void
 set_threads_event_flags(int flag)
 {
-    st_foreach(GET_VM()->living_threads, set_threads_event_flags_i, (st_data_t) flag);
+    st_foreach_nocheck(GET_VM()->living_threads, set_threads_event_flags_i, (st_data_t) flag);
 }
 
 static inline int
@@ -4299,7 +4299,7 @@ static rb_thread_t *
 vm_event_hooks_running_thread(rb_vm_t *vm)
 {
     rb_thread_t *found = NULL;
-    st_foreach(vm->living_threads, running_vm_event_hooks, (st_data_t)&found);
+    st_foreach_nocheck(vm->living_threads, running_vm_event_hooks, (st_data_t)&found);
     return found;
 }
 

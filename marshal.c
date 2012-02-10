@@ -106,7 +106,7 @@ static void
 mark_marshal_compat_t(void *tbl)
 {
     if (!tbl) return;
-    st_foreach(tbl, mark_marshal_compat_i, 0);
+    st_foreach_nocheck(tbl, mark_marshal_compat_i, 0);
 }
 
 void

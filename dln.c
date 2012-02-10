@@ -466,7 +466,7 @@ static void
 dln_print_undef(void)
 {
     fprintf(stderr, " Undefined symbols:\n");
-    st_foreach(undef_tbl, undef_print, NULL);
+    st_foreach_nocheck(undef_tbl, undef_print, NULL);
 }
 
 static void
@@ -660,7 +660,7 @@ load_1(int fd, long disp, const char *need_init)
 
 		data.name0 = sym->n_un.n_name;
 		data.name1 = sym[1].n_un.n_name;
-		st_foreach(reloc_tbl, reloc_repl, &data);
+		st_foreach_nocheck(reloc_tbl, reloc_repl, &data);
 
 		st_insert(undef_tbl, strdup(sym[1].n_un.n_name), NULL);
 		if (st_delete(undef_tbl, (st_data_t*)&key, NULL)) {
@@ -982,7 +982,7 @@ load_lib(const char *lib)
 	}
 	for (;;) {
 	    target_offset = -1;
-	    st_foreach(undef_tbl, search_undef, lib_tbl);
+	    st_foreach_nocheck(undef_tbl, search_undef, lib_tbl);
 	    if (target_offset == -1) break;
 	    if (load_1(fd, target_offset, 0) == -1) {
 		st_free_table(lib_tbl);
