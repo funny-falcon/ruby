@@ -932,6 +932,28 @@ st_cleanup_safe(st_table *table, st_data_t never)
 }
 
 int
+st_foreach_nocheck(st_table *table, int (*func)(ANYARGS), st_data_t arg)
+{
+    if (table->num_entries == 0) return 0;
+    if (ULTRA_PACKED(table)) {
+        (*func)(UPKEY(table), UPVAL(table), arg);
+    }
+    else if (table->entries_packed) {
+        register st_index_t i;
+        for(i = 0; i < table->num_entries; i++) {
+            (*func)(PKEY(table, i), PVAL(table, i), arg);
+        }
+    }
+    else {
+        st_table_entry *ptr;
+        for(ptr = table->head; ptr; ptr = ptr->fore) {
+            (*func)(ptr->key, ptr->record, arg);
+        }
+    }
+    return 0;
+}
+
+int
 st_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
 {
     st_table_entry *ptr, **last, *tmp;
