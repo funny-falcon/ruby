@@ -934,6 +934,7 @@ st_cleanup_safe(st_table *table, st_data_t never)
 int
 st_foreach_nocheck(st_table *table, int (*func)(ANYARGS), st_data_t arg)
 {
+    enum st_retval retval;
     if (table->num_entries == 0) return 0;
     if (ULTRA_PACKED(table)) {
         (*func)(UPKEY(table), UPVAL(table), arg);
@@ -941,13 +942,15 @@ st_foreach_nocheck(st_table *table, int (*func)(ANYARGS), st_data_t arg)
     else if (table->entries_packed) {
         register st_index_t i;
         for(i = 0; i < table->num_entries; i++) {
-            (*func)(PKEY(table, i), PVAL(table, i), arg);
+            retval = (*func)(PKEY(table, i), PVAL(table, i), arg);
+            if (retval == ST_STOP) break;
         }
     }
     else {
         st_table_entry *ptr;
         for(ptr = table->head; ptr; ptr = ptr->fore) {
-            (*func)(ptr->key, ptr->record, arg);
+            retval = (*func)(ptr->key, ptr->record, arg);
+            if (retval == ST_STOP) break;
         }
     }
     return 0;

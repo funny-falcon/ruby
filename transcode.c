@@ -319,7 +319,7 @@ transcode_search_path(const char *sname, const char *dname,
         }
 
         bfs.base_enc = q->enc;
-        st_foreach(table2, transcode_search_path_i, (st_data_t)&bfs);
+        st_foreach_nocheck(table2, transcode_search_path_i, (st_data_t)&bfs);
         bfs.base_enc = NULL;
 
         xfree(q);

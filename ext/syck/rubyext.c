@@ -754,11 +754,11 @@ syck_mark_parser(SyckParser *parser)
 
     if ( parser->anchors != NULL )
     {
-        st_foreach( parser->anchors, syck_st_mark_nodes, 0 );
+        st_foreach_nocheck( parser->anchors, syck_st_mark_nodes, 0 );
     }
     if ( parser->bad_anchors != NULL )
     {
-        st_foreach( parser->bad_anchors, syck_st_mark_nodes, 0 );
+        st_foreach_nocheck( parser->bad_anchors, syck_st_mark_nodes, 0 );
     }
 }
 

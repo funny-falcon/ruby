@@ -98,7 +98,7 @@ fc_i(ID key, rb_const_entry_t *ce, struct fc_result *res)
 	    arg.klass = res->klass;
 	    arg.track = value;
 	    arg.prev = res;
-	    st_foreach(RCLASS_CONST_TBL(value), fc_i, (st_data_t)&arg);
+	    st_foreach_nocheck(RCLASS_CONST_TBL(value), fc_i, (st_data_t)&arg);
 	    if (arg.path) {
 		res->path = arg.path;
 		return ST_STOP;
@@ -123,10 +123,10 @@ find_class_path(VALUE klass)
     arg.track = rb_cObject;
     arg.prev = 0;
     if (RCLASS_CONST_TBL(rb_cObject)) {
-	st_foreach_safe(RCLASS_CONST_TBL(rb_cObject), fc_i, (st_data_t)&arg);
+	st_foreach_nocheck(RCLASS_CONST_TBL(rb_cObject), fc_i, (st_data_t)&arg);
     }
     if (arg.path == 0) {
-	st_foreach_safe(rb_class_tbl, fc_i, (st_data_t)&arg);
+	st_foreach_nocheck(rb_class_tbl, fc_i, (st_data_t)&arg);
     }
     if (arg.path) {
 	st_data_t tmp = tmp_classpath;
@@ -1731,7 +1731,7 @@ rb_mod_const_at(VALUE mod, void *data)
 	tbl = st_init_numtable();
     }
     if (RCLASS_CONST_TBL(mod)) {
-	st_foreach_safe(RCLASS_CONST_TBL(mod), sv_i, (st_data_t)tbl);
+	st_foreach_nocheck(RCLASS_CONST_TBL(mod), sv_i, (st_data_t)tbl);
     }
     return tbl;
 }
@@ -1766,7 +1766,7 @@ rb_const_list(void *data)
 
     if (!tbl) return rb_ary_new2(0);
     ary = rb_ary_new2(tbl->num_entries);
-    st_foreach_safe(tbl, list_i, ary);
+    st_foreach_nocheck(tbl, list_i, ary);
     st_free_table(tbl);
 
     return ary;

@@ -223,7 +223,7 @@ syck_st_free( SyckParser *p )
 
     if ( p->bad_anchors != NULL )
     {
-        st_foreach( p->bad_anchors, syck_st_free_nodes, 0 );
+        st_foreach_nocheck( p->bad_anchors, syck_st_free_nodes, 0 );
         st_free_table( p->bad_anchors );
         p->bad_anchors = NULL;
     }
@@ -253,7 +253,7 @@ syck_free_parser( SyckParser *p )
      */
     if ( p->syms != NULL )
     {
-        st_foreach( p->syms, syck_st_free_syms, 0 );
+        st_foreach_nocheck( p->syms, syck_st_free_syms, 0 );
         st_free_table( p->syms );
         p->syms = NULL;
     }

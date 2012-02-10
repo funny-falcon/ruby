@@ -10040,7 +10040,7 @@ rb_sym_all_symbols(void)
 {
     VALUE ary = rb_ary_new2(global_symbols.sym_id->num_entries);
 
-    st_foreach(global_symbols.sym_id, symbols_i, ary);
+    st_foreach_nocheck(global_symbols.sym_id, symbols_i, ary);
     return ary;
 }
 

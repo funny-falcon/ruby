@@ -452,7 +452,7 @@ validate_label(st_data_t name, st_data_t label, st_data_t arg)
 static void
 validate_labels(rb_iseq_t *iseq, st_table *labels_table)
 {
-    st_foreach(labels_table, validate_label, (st_data_t)iseq);
+    st_foreach_nocheck(labels_table, validate_label, (st_data_t)iseq);
     if (!NIL_P(iseq->compile_data->err_info)) {
 	rb_exc_raise(iseq->compile_data->err_info);
     }
