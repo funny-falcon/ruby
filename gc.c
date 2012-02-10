@@ -20,6 +20,7 @@
 #include "vm_core.h"
 #include "internal.h"
 #include "gc.h"
+#include "pool_alloc.h"
 #include "constant.h"
 #include <stdio.h>
 #include <setjmp.h>
@@ -35,6 +36,11 @@
 
 #if defined _WIN32 || defined __CYGWIN__
 #include <windows.h>
+#elif defined POOL_ALLOC_API
+#if   defined(HAVE_POSIX_MEMALIGN)
+#elif defined(HAVE_MEMALIGN)
+#include <malloc.h>
+#endif
 #endif
 
 #ifdef HAVE_VALGRIND_MEMCHECK_H
@@ -311,6 +317,24 @@ struct gc_list {
 
 #define CALC_EXACT_MALLOC_SIZE 0
 
+#ifdef POOL_ALLOC_API
+/* POOL ALLOC API */
+#define POOL_ALLOC_PART 1
+#include "pool_alloc.inc.h"
+#undef POOL_ALLOC_PART
+
+typedef struct pool_layout_t pool_layout_t;
+struct pool_layout_t {
+    pool_header
+      p6,  /* st_table && st_table_entry */
+      p11;  /* st_table.bins init size */
+} pool_layout = {
+    INIT_POOL(void*[6]),
+    INIT_POOL(void*[11])
+};
+static void pool_finalize_header(pool_header *header);
+#endif
+
 typedef struct rb_objspace {
     struct {
 	size_t limit;
@@ -320,6 +344,9 @@ typedef struct rb_objspace {
 	size_t allocations;
 #endif
     } malloc_params;
+#ifdef POOL_ALLOC_API
+    pool_layout_t *pool_headers;
+#endif
     struct {
 	size_t increment;
 	struct heaps_slot *ptr;
@@ -367,7 +394,11 @@ typedef struct rb_objspace {
 static int ruby_initial_gc_stress = 0;
 int *ruby_initial_gc_stress_ptr = &ruby_initial_gc_stress;
 #else
+#  ifdef POOL_ALLOC_API
+static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, &pool_layout, {HEAP_MIN_SLOTS}};
+#  else
 static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, {HEAP_MIN_SLOTS}};
+#  endif
 int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #endif
 #define malloc_limit		objspace->malloc_params.limit
@@ -400,6 +431,10 @@ rb_objspace_alloc(void)
     memset(objspace, 0, sizeof(*objspace));
     malloc_limit = initial_malloc_limit;
     ruby_gc_stress = ruby_initial_gc_stress;
+#ifdef POOL_ALLOC_API
+    objspace->pool_headers = (pool_layout_t*) malloc(sizeof(pool_layout));
+    memcpy(objspace->pool_headers, &pool_layout, sizeof(pool_layout));
+#endif
 
     return objspace;
 }
@@ -477,6 +512,13 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
+#ifdef POOL_ALLOC_API
+    if (objspace->pool_headers) {
+        pool_finalize_header(&objspace->pool_headers->p6);
+        pool_finalize_header(&objspace->pool_headers->p11);
+        free(objspace->pool_headers);
+    }
+#endif
     free(objspace);
 }
 #else
@@ -885,6 +927,27 @@ ruby_xfree(void *x)
 	vm_xfree(&rb_objspace, x);
 }
 
+#ifdef POOL_ALLOC_API
+/* POOL ALLOC API */
+#define POOL_ALLOC_PART 2
+#include "pool_alloc.inc.h"
+#undef POOL_ALLOC_PART
+
+void
+ruby_xpool_free(void *ptr)
+{
+    pool_free_entry((void**)ptr);
+}
+
+#define CONCRET_POOL_MALLOC(pnts) \
+void * ruby_xpool_malloc_##pnts##p () { \
+    return pool_alloc_entry(&rb_objspace.pool_headers->p##pnts ); \
+}
+CONCRET_POOL_MALLOC(6)
+CONCRET_POOL_MALLOC(11)
+#undef CONCRET_POOL_MALLOC
+
+#endif
 
 /*
  *  call-seq:
