@@ -1493,16 +1493,15 @@ gc_mark_rest(rb_objspace_t *objspace)
 }
 
 static inline int
-is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
+is_pointer_to_heap(rb_objspace_t *objspace, register void *ptr)
 {
-    register RVALUE *p = RANY(ptr);
-    register struct heaps_header *heap, *vheap;
+    register struct heaps_header *heap;
     register size_t hi, lo, mid;
 
-    if (p < lomem || p > himem) return FALSE;
-    mid = ((size_t)p & HEAP_ALIGN_MASK) - HEAP_RVALUES_OFFSET;
+    if (ptr < (void*)lomem || ptr > (void*)himem) return FALSE;
+    mid = ((size_t)ptr & HEAP_ALIGN_MASK) - HEAP_RVALUES_OFFSET;
     if (mid % sizeof(RVALUE) != 0 || mid >= HEAP_OBJ_LIMIT * sizeof(RVALUE)) return FALSE;
-    vheap = GET_HEAP_HEADER(p);
+    ptr = GET_HEAP_HEADER(ptr);
 
     /* check if p looks like a pointer using bsearch*/
     lo = 0;
@@ -1510,10 +1509,10 @@ is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
     while (lo < hi) {
 	mid = (lo + hi) / 2;
 	heap = objspace->heap.sorted[mid];
-	if (heap < vheap) {
+	if ((void*)heap < ptr) {
 	    lo = mid + 1;
 	}
-	else if (heap == vheap) {
+	else if ((void*)heap == ptr) {
 	    return TRUE;
 	}
 	else {
