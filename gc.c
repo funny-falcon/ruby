@@ -354,7 +354,7 @@ typedef struct rb_objspace {
 	struct heaps_slot *ptr;
 	struct heaps_slot *sweep_slots;
 	struct heaps_slot *free_slots;
-	struct sorted_heaps_slot *sorted;
+	struct heaps_header **sorted;
 	size_t length;
 	size_t used;
 	RVALUE *range[2];
@@ -426,8 +426,6 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #define is_lazy_sweeping(objspace) ((objspace)->heap.sweep_slots != 0)
 
 #define nonspecial_obj_id(obj) (VALUE)((SIGNED_VALUE)(obj)|FIXNUM_FLAG)
-
-#define HEAP_HEADER(p) ((struct heaps_header *)(p))
 
 static void rb_objspace_call_finalizer(rb_objspace_t *objspace);
 
@@ -512,8 +510,8 @@ rb_objspace_free(rb_objspace_t *objspace)
     if (objspace->heap.sorted) {
 	size_t i;
 	for (i = 0; i < heaps_used; ++i) {
-	    aligned_free(objspace->heap.sorted[i].slot->membase);
-            free(objspace->heap.sorted[i].slot);
+            free(objspace->heap.sorted[i]->base);
+	    aligned_free(objspace->heap.sorted[i]);
 	}
 	free(objspace->heap.sorted);
 	heaps_used = 0;
@@ -538,7 +536,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 #define HEAP_BITMAP_LIMIT CEILMOD(HEAP_OBJ_LIMIT, sizeof(uintptr_t)*8)
 #define HEAPS_SLOT_SIZE (sizeof(struct heaps_slot) + (HEAP_BITMAP_LIMIT - 1) * sizeof(uintptr_t))
 
-#define GET_HEAP_HEADER(x) (HEAP_HEADER(((uintptr_t)x) & ~(HEAP_ALIGN_MASK)))
+#define GET_HEAP_HEADER(x) ((struct heaps_header*)(((uintptr_t)x) & ~(HEAP_ALIGN_MASK)))
 #define GET_HEAP_SLOT(x) (GET_HEAP_HEADER(x)->base)
 #define GET_HEAP_BITMAP(x) (GET_HEAP_SLOT(x)->bits)
 #define NUM_IN_SLOT(p) (((uintptr_t)p & HEAP_ALIGN_MASK)/sizeof(RVALUE))
@@ -1043,17 +1041,17 @@ rb_gc_unregister_address(VALUE *addr)
 static void
 allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
 {
-    struct sorted_heaps_slot *p;
+    struct heaps_header **p;
     size_t size;
 
-    size = next_heaps_length*sizeof(struct sorted_heaps_slot);
+    size = next_heaps_length*sizeof(struct heaps_header**);
 
     if (heaps_used > 0) {
-	p = (struct sorted_heaps_slot *)realloc(objspace->heap.sorted, size);
+	p = (struct heaps_header**)realloc(objspace->heap.sorted, size);
 	if (p) objspace->heap.sorted = p;
     }
     else {
-	p = objspace->heap.sorted = (struct sorted_heaps_slot *)malloc(size);
+	p = objspace->heap.sorted = (struct heaps_header**)malloc(size);
     }
 
     if (p == 0) {
@@ -1145,7 +1143,7 @@ assign_heap_slot(rb_objspace_t *objspace)
     while (lo < hi) {
 	register struct heaps_header *mid_membase;
 	mid = (lo + hi) / 2;
-        mid_membase = objspace->heap.sorted[mid].slot->membase;
+        mid_membase = objspace->heap.sorted[mid];
 	if (mid_membase < membase) {
 	    lo = mid + 1;
 	}
@@ -1157,15 +1155,13 @@ assign_heap_slot(rb_objspace_t *objspace)
 	}
     }
     if (hi < heaps_used) {
-	MEMMOVE(&objspace->heap.sorted[hi+1], &objspace->heap.sorted[hi], struct sorted_heaps_slot, heaps_used - hi);
+	MEMMOVE(&objspace->heap.sorted[hi+1], &objspace->heap.sorted[hi], struct heaps_header**, heaps_used - hi);
     }
-    objspace->heap.sorted[hi].slot = slot;
-    objspace->heap.sorted[hi].start = p;
-    objspace->heap.sorted[hi].end = (p + objs);
+    objspace->heap.sorted[hi] = membase;
     slot->membase = membase;
     slot->slot = p;
     slot->limit = objs;
-    HEAP_HEADER(membase)->base = slot;
+    membase->base = slot;
     memset(slot->bits, 0, HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
     objspace->heap.free_num += objs;
     pend = p + objs;
@@ -1465,18 +1461,17 @@ static void gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev);
 static void
 gc_mark_all(rb_objspace_t *objspace)
 {
-    RVALUE *p, *pend;
-    size_t i;
+    RVALUE *p;
+    size_t i, j;
 
     init_mark_stack(objspace);
     for (i = 0; i < heaps_used; i++) {
-	p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
-	while (p < pend) {
+	p = objspace->heap.sorted[i]->rvalues;
+        for (j = HEAP_OBJ_LIMIT; j--; p++) {
 	    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p) &&
 		p->as.basic.flags) {
 		gc_mark_children(objspace, (VALUE)p, 0);
 	    }
-	    p++;
 	}
     }
 }
@@ -1501,23 +1496,25 @@ static inline int
 is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
 {
     register RVALUE *p = RANY(ptr);
-    register struct sorted_heaps_slot *heap;
+    register struct heaps_header *heap, *vheap;
     register size_t hi, lo, mid;
 
     if (p < lomem || p > himem) return FALSE;
     mid = ((size_t)p & HEAP_ALIGN_MASK) - HEAP_RVALUES_OFFSET;
     if (mid % sizeof(RVALUE) != 0 || mid >= HEAP_OBJ_LIMIT * sizeof(RVALUE)) return FALSE;
+    vheap = GET_HEAP_HEADER(p);
 
     /* check if p looks like a pointer using bsearch*/
     lo = 0;
     hi = heaps_used;
     while (lo < hi) {
 	mid = (lo + hi) / 2;
-	heap = &objspace->heap.sorted[mid];
-	if (heap->start <= p) {
-	    if (p < heap->end)
-		return TRUE;
+	heap = objspace->heap.sorted[mid];
+	if (heap < vheap) {
 	    lo = mid + 1;
+	}
+	else if (heap == vheap) {
+	    return TRUE;
 	}
 	else {
 	    hi = mid;
@@ -2119,15 +2116,14 @@ free_unused_heaps(rb_objspace_t *objspace)
     struct heaps_header *last = 0;
 
     for (i = j = 1; j < heaps_used; i++) {
-	if (objspace->heap.sorted[i].slot->limit == 0) {
-            struct heaps_slot *h = objspace->heap.sorted[i].slot;
+	if (objspace->heap.sorted[i]->base->limit == 0) {
+            free(objspace->heap.sorted[i]->base);
 	    if (!last) {
-                last = h->membase;
+                last = objspace->heap.sorted[i];
 	    }
 	    else {
-		aligned_free(h->membase);
+		aligned_free(objspace->heap.sorted[i]);
 	    }
-            free(h);
 	    heaps_used--;
 	}
 	else {
@@ -2795,16 +2791,16 @@ objspace_each_objects(VALUE arg)
 
     i = 0;
     while (i < heaps_used) {
-	while (0 < i && (uintptr_t)membase < (uintptr_t)objspace->heap.sorted[i-1].slot->membase)
+	while (0 < i && (uintptr_t)membase < (uintptr_t)objspace->heap.sorted[i-1])
 	    i--;
-	while (i < heaps_used && (uintptr_t)objspace->heap.sorted[i].slot->membase <= (uintptr_t)membase)
+	while (i < heaps_used && (uintptr_t)objspace->heap.sorted[i] <= (uintptr_t)membase)
 	    i++;
 	if (heaps_used <= i)
 	  break;
-	membase = objspace->heap.sorted[i].slot->membase;
+	membase = objspace->heap.sorted[i];
 
-	pstart = objspace->heap.sorted[i].slot->slot;
-	pend = pstart + objspace->heap.sorted[i].slot->limit;
+	pstart = objspace->heap.sorted[i]->rvalues;
+	pend = pstart + objspace->heap.sorted[i]->base->limit;
 
 	for (; pstart != pend; pstart++) {
 	    if (pstart->as.basic.flags) {
@@ -3177,9 +3173,9 @@ rb_gc_call_finalizer_at_exit(void)
 static void
 rb_objspace_call_finalizer(rb_objspace_t *objspace)
 {
-    RVALUE *p, *pend;
+    RVALUE *p;
     RVALUE *final_list = 0;
-    size_t i;
+    size_t i, j;
 
     /* run finalizers */
     gc_clear_mark_on_sweep_slots(objspace);
@@ -3213,8 +3209,8 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 
     /* run data object's finalizers */
     for (i = 0; i < heaps_used; i++) {
-	p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
-	while (p < pend) {
+	p = objspace->heap.sorted[i]->rvalues;
+	for(j = HEAP_OBJ_LIMIT; j--; p++) {
 	    if (BUILTIN_TYPE(p) == T_DATA &&
 		DATA_PTR(p) && RANY(p)->as.data.dfree &&
 		!rb_obj_is_thread((VALUE)p) && !rb_obj_is_mutex((VALUE)p) ) {
@@ -3238,7 +3234,6 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 		    final_list = p;
 		}
 	    }
-	    p++;
 	}
     }
     during_gc = 0;
@@ -3461,10 +3456,11 @@ count_objects(int argc, VALUE *argv, VALUE os)
     }
 
     for (i = 0; i < heaps_used; i++) {
-        RVALUE *p, *pend;
+        RVALUE *p;
+        size_t j;
 
-        p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
-        for (;p < pend; p++) {
+        p = objspace->heap.sorted[i]->rvalues;
+        for (j = HEAP_OBJ_LIMIT; j--; p++) {
             if (p->as.basic.flags) {
                 counts[BUILTIN_TYPE(p)]++;
             }
@@ -3472,7 +3468,7 @@ count_objects(int argc, VALUE *argv, VALUE os)
                 freed++;
             }
         }
-        total += objspace->heap.sorted[i].slot->limit;
+        total += objspace->heap.sorted[i]->base->limit;
     }
 
     if (hash == Qnil) {
