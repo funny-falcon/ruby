@@ -1166,24 +1166,28 @@ assign_heap_slot(rb_objspace_t *objspace)
     objspace->heap.sorted[hi].slot = slot;
     objspace->heap.sorted[hi].start = p;
     objspace->heap.sorted[hi].end = (p + objs);
-    heaps->membase = membase;
-    heaps->slot = p;
-    heaps->limit = objs;
-    HEAP_HEADER(membase)->base = heaps;
-    memset(heaps->bits, 0, HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
+    slot->membase = membase;
+    slot->slot = p;
+    slot->limit = objs;
+    HEAP_HEADER(membase)->base = slot;
+    memset(slot->bits, 0, HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
     objspace->heap.free_num += objs;
     pend = p + objs;
     if (lomem == 0 || lomem > p) lomem = p;
     if (himem < pend) himem = pend;
     heaps_used++;
 
+    slot->freelist = p;
+    pend--;
     while (p < pend) {
 	p->as.free.flags = 0;
-	p->as.free.next = heaps->freelist;
-	heaps->freelist = p;
+	p->as.free.next = p + 1;
 	p++;
     }
-    link_free_heap_slot(objspace, heaps);
+    p->as.free.flags = 0;
+    p->as.free.next = 0;
+
+    link_free_heap_slot(objspace, slot);
 }
 
 static void
@@ -2119,13 +2123,14 @@ free_unused_heaps(rb_objspace_t *objspace)
 
     for (i = j = 1; j < heaps_used; i++) {
 	if (objspace->heap.sorted[i].slot->limit == 0) {
+            struct heaps_slot *h = objspace->heap.sorted[i].slot;
 	    if (!last) {
-                last = objspace->heap.sorted[i].slot->membase;
+                last = h->membase;
 	    }
 	    else {
-		aligned_free(objspace->heap.sorted[i].slot->membase);
+		aligned_free(h->membase);
 	    }
-            free(objspace->heap.sorted[i].slot);
+            free(h);
 	    heaps_used--;
 	}
 	else {
