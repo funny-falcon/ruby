@@ -310,7 +310,7 @@ typedef struct RVALUE {
 #endif
 
 struct heaps_slot {
-    void *membase;
+    struct heaps_header *membase;
     RVALUE *slot;
     size_t limit;
     RVALUE *freelist;
@@ -322,6 +322,7 @@ struct heaps_slot {
 
 struct heaps_header {
     struct heaps_slot *base;
+    RVALUE rvalues[1];
 };
 
 struct sorted_heaps_slot {
@@ -357,7 +358,7 @@ typedef struct rb_objspace {
 	size_t length;
 	size_t used;
 	RVALUE *range[2];
-	RVALUE *freed;
+	struct heaps_header *freed;
 	size_t live_num;
 	size_t free_num;
 	size_t free_min;
@@ -532,7 +533,8 @@ rb_objspace_free(rb_objspace_t *objspace)
 #define HEAP_SIZE (HEAP_ALIGN - REQUIRED_SIZE_BY_MALLOC)
 #define CEILMOD(i, mod) (((i) + (mod) - 1)/(mod))
 
-#define HEAP_OBJ_LIMIT (unsigned int)((HEAP_SIZE - sizeof(struct heaps_header))/sizeof(struct RVALUE))
+#define HEAP_RVALUES_OFFSET offsetof(struct heaps_header, rvalues)
+#define HEAP_OBJ_LIMIT (unsigned int)((HEAP_SIZE - HEAP_RVALUES_OFFSET)/sizeof(struct RVALUE))
 #define HEAP_BITMAP_LIMIT CEILMOD(HEAP_OBJ_LIMIT, sizeof(uintptr_t)*8)
 #define HEAPS_SLOT_SIZE (sizeof(struct heaps_slot) + (HEAP_BITMAP_LIMIT - 1) * sizeof(uintptr_t))
 
@@ -1112,20 +1114,21 @@ unlink_free_heap_slot(rb_objspace_t *objspace, struct heaps_slot *slot)
 static void
 assign_heap_slot(rb_objspace_t *objspace)
 {
-    RVALUE *p, *pend, *membase;
+    RVALUE *p, *pend;
+    struct heaps_header *membase;
     struct heaps_slot *slot;
     size_t hi, lo, mid;
     size_t objs;
 
     objs = HEAP_OBJ_LIMIT;
-    p = (RVALUE*)aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
-    if (p == 0) {
+    membase = (struct heaps_header*)aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
+    if (membase == 0) {
 	during_gc = 0;
 	rb_memerror();
     }
     slot = (struct heaps_slot *)malloc(HEAPS_SLOT_SIZE);
     if (slot == 0) {
-       aligned_free(p);
+       aligned_free(membase);
        during_gc = 0;
        rb_memerror();
     }
@@ -1135,19 +1138,12 @@ assign_heap_slot(rb_objspace_t *objspace)
     if (heaps) heaps->prev = slot;
     heaps = slot;
 
-    membase = p;
-    p = (RVALUE*)((VALUE)p + sizeof(struct heaps_header));
-    if ((VALUE)p % sizeof(RVALUE) != 0) {
-       p = (RVALUE*)((VALUE)p + sizeof(RVALUE) - ((VALUE)p % sizeof(RVALUE)));
-       if ((HEAP_SIZE - HEAP_OBJ_LIMIT * sizeof(RVALUE)) < (size_t)((char*)p - (char*)membase)) {
-           objs--;
-       }
-    }
+    p = membase->rvalues;
 
     lo = 0;
     hi = heaps_used;
     while (lo < hi) {
-	register RVALUE *mid_membase;
+	register struct heaps_header *mid_membase;
 	mid = (lo + hi) / 2;
         mid_membase = objspace->heap.sorted[mid].slot->membase;
 	if (mid_membase < membase) {
@@ -1509,7 +1505,8 @@ is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
     register size_t hi, lo, mid;
 
     if (p < lomem || p > himem) return FALSE;
-    if ((VALUE)p % sizeof(RVALUE) != 0) return FALSE;
+    mid = ((size_t)p & HEAP_ALIGN_MASK) - HEAP_RVALUES_OFFSET;
+    if (mid % sizeof(RVALUE) != 0 || mid >= HEAP_OBJ_LIMIT * sizeof(RVALUE)) return FALSE;
 
     /* check if p looks like a pointer using bsearch*/
     lo = 0;
@@ -2119,7 +2116,7 @@ static void
 free_unused_heaps(rb_objspace_t *objspace)
 {
     size_t i, j;
-    RVALUE *last = 0;
+    struct heaps_header *last = 0;
 
     for (i = j = 1; j < heaps_used; i++) {
 	if (objspace->heap.sorted[i].slot->limit == 0) {
@@ -2790,7 +2787,7 @@ static VALUE
 objspace_each_objects(VALUE arg)
 {
     size_t i;
-    RVALUE *membase = 0;
+    struct heaps_header *membase = 0;
     RVALUE *pstart, *pend;
     rb_objspace_t *objspace = &rb_objspace;
     struct each_obj_args *args = (struct each_obj_args *)arg;
@@ -3330,7 +3327,7 @@ id2ref(VALUE obj, VALUE objid)
     if (FIXNUM_P(ptr)) return (VALUE)ptr;
     ptr = objid ^ FIXNUM_FLAG;	/* unset FIXNUM_FLAG */
 
-    if ((ptr % sizeof(RVALUE)) == (4 << 2)) {
+    if (((ptr & HEAP_ALIGN_MASK) % sizeof(RVALUE)) == 0) {
         ID symid = ptr / sizeof(RVALUE);
         if (rb_id2name(symid) == 0)
 	    rb_raise(rb_eRangeError, "%p is not symbol id value", p0);
@@ -3393,8 +3390,8 @@ rb_obj_id(VALUE obj)
      *  true    00000000000000000000000000000010
      *  nil     00000000000000000000000000000100
      *  undef   00000000000000000000000000000110
-     *  symbol   000SSSSSSSSSSSSSSSSSSSSSSSSSSS0        S...S % A = 4 (S...S = s...s * A + 4)
-     *  object   oooooooooooooooooooooooooooooo0        o...o % A = 0
+     *  symbol   000SSSSSSSSSSSSSSSSSSSSSSSSSSS0        (S...S & HEAP_ALIGN_MASK) % A = 0
+     *  object   oooooooooooooooooooooooooooooo0        (o...o & HEAP_ALIGN_MASK) % A = HEAP_RVALUES_OFFSET
      *  fixnum  fffffffffffffffffffffffffffffff1        bignum if required
      *
      *  where A = sizeof(RVALUE)/4
@@ -3405,7 +3402,9 @@ rb_obj_id(VALUE obj)
      *  40 if 64-bit
      */
     if (SYMBOL_P(obj)) {
-        return (SYM2ID(obj) * sizeof(RVALUE) + (4 << 2)) | FIXNUM_FLAG;
+        VALUE ret = SYM2ID(obj) * sizeof(RVALUE);
+        ret -= (ret & HEAP_ALIGN_MASK) % sizeof(RVALUE);
+        return ret | FIXNUM_FLAG;
     }
     if (SPECIAL_CONST_P(obj)) {
         return LONG2NUM((SIGNED_VALUE)obj);
@@ -3826,7 +3825,6 @@ gc_profile_total_time(VALUE self)
  *  You may obtain information about the operation of the GC through
  *  GC::Profiler.
  */
-
 void
 Init_GC(void)
 {
