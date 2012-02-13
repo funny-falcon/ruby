@@ -2425,15 +2425,6 @@ make_io_deferred(RVALUE *p)
 static int
 obj_free(rb_objspace_t *objspace, VALUE obj)
 {
-    switch (BUILTIN_TYPE(obj)) {
-      case T_NIL:
-      case T_FIXNUM:
-      case T_TRUE:
-      case T_FALSE:
-	rb_bug("obj_free() called for broken object");
-	break;
-    }
-
     if (FL_TEST(obj, FL_EXIVAR)) {
 	rb_free_generic_ivar((VALUE)obj);
 	FL_UNSET(obj, FL_EXIVAR);
