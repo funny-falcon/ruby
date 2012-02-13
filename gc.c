@@ -528,19 +528,21 @@ rb_objspace_free(rb_objspace_t *objspace)
 #define HEAP_ALIGN_MASK (~(~0UL << HEAP_ALIGN_LOG))
 #define REQUIRED_SIZE_BY_MALLOC (sizeof(size_t) * 5)
 #define HEAP_SIZE (HEAP_ALIGN - REQUIRED_SIZE_BY_MALLOC)
+
+#define UINTPTRT_BITS (sizeof(uintptr_t)*8)
 #define CEILMOD(i, mod) (((i) + (mod) - 1)/(mod))
 
 #define HEAP_RVALUES_OFFSET offsetof(struct heaps_header, rvalues)
 #define HEAP_OBJ_LIMIT (unsigned int)((HEAP_SIZE - HEAP_RVALUES_OFFSET)/sizeof(struct RVALUE))
-#define HEAP_BITMAP_LIMIT CEILMOD(HEAP_OBJ_LIMIT, sizeof(uintptr_t)*8)
+#define HEAP_BITMAP_LIMIT CEILMOD(HEAP_OBJ_LIMIT, UINTPTRT_BITS)
 #define HEAPS_SLOT_SIZE (sizeof(struct heaps_slot) + (HEAP_BITMAP_LIMIT - 1) * sizeof(uintptr_t))
 
 #define GET_HEAP_HEADER(x) ((struct heaps_header*)(((uintptr_t)x) & ~(HEAP_ALIGN_MASK)))
 #define GET_HEAP_SLOT(x) (GET_HEAP_HEADER(x)->base)
 #define GET_HEAP_BITMAP(x) (GET_HEAP_SLOT(x)->bits)
 #define NUM_IN_SLOT(p) (((uintptr_t)p & HEAP_ALIGN_MASK)/sizeof(RVALUE))
-#define BITMAP_INDEX(p) (NUM_IN_SLOT(p) / (sizeof(uintptr_t) * 8))
-#define BITMAP_OFFSET(p) (NUM_IN_SLOT(p) & ((sizeof(uintptr_t) * 8)-1))
+#define BITMAP_INDEX(p) (NUM_IN_SLOT(p) / UINTPTRT_BITS)
+#define BITMAP_OFFSET(p) (NUM_IN_SLOT(p) & (UINTPTRT_BITS-1))
 #define MARKED_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] & ((uintptr_t)1 << BITMAP_OFFSET(p)))
 #define MARK_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] = bits[BITMAP_INDEX(p)] | ((uintptr_t)1 << BITMAP_OFFSET(p)))
 #define CLEAR_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] &= ~((uintptr_t)1 << BITMAP_OFFSET(p)))
@@ -2158,15 +2160,23 @@ static void
 slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
 {
     size_t free_num = 0, final_num = 0;
-    RVALUE *p, *pend;
+    register RVALUE *p;
     RVALUE *final = deferred_final_list;
     int deferred;
-    uintptr_t *bits;
+    register uintptr_t *bitsp, bits, mask;
+    register unsigned int i;
 
-    p = sweep_slot->membase->rvalues; pend = p + HEAP_OBJ_LIMIT;
-    bits = GET_HEAP_BITMAP(p);
-    while (p < pend) {
-        if ((!(MARKED_IN_BITMAP(bits, p))) && BUILTIN_TYPE(p) != T_ZOMBIE) {
+    bitsp = sweep_slot->bits;
+    /* fill tail bits to look like marked */
+    bitsp[HEAP_BITMAP_LIMIT - 1] |=
+        (~(uintptr_t)0) << (HEAP_OBJ_LIMIT - (HEAP_BITMAP_LIMIT - 1)*UINTPTRT_BITS);
+
+    p = sweep_slot->membase->rvalues;
+    for(i = HEAP_BITMAP_LIMIT; i--; bitsp++) {
+        register unsigned int j;
+        bits = *bitsp;
+        for(j = UINTPTRT_BITS, mask = 1; j--; p++, (mask <<= 1)) {
+            if ((bits & mask) || BUILTIN_TYPE(p) == T_ZOMBIE) continue;
             if (p->as.basic.flags) {
                 if ((deferred = obj_free(objspace, (VALUE)p)) ||
                     (FL_TEST(p, FL_FINALIZE))) {
@@ -2190,8 +2200,7 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
             else {
                 free_num++;
             }
-        }
-        p++;
+	}
     }
     gc_clear_slot_bits(sweep_slot);
     if (final_num + free_num == sweep_slot->limit &&
