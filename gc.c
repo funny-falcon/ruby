@@ -1737,15 +1737,16 @@ rb_gc_mark_maybe(VALUE obj)
 static void
 gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
 {
-    register RVALUE *obj;
-    register uintptr_t *bits;
+    register uintptr_t *bitsp;
+    register uintptr_t bits, mask;
 
-    obj = RANY(ptr);
     if (rb_special_const_p(ptr)) return; /* special const not marked */
-    if (obj->as.basic.flags == 0) return;       /* free cell */
-    bits = GET_HEAP_BITMAP(ptr);
-    if (MARKED_IN_BITMAP(bits, ptr)) return;  /* already marked */
-    MARK_IN_BITMAP(bits, ptr);
+    if (RANY(ptr)->as.basic.flags == 0) return;       /* free cell */
+    mask = (uintptr_t)1 << BITMAP_OFFSET(ptr);
+    bitsp = GET_HEAP_BITMAP(ptr) + BITMAP_INDEX(ptr);
+    bits = *bitsp;
+    if (bits & mask) return;
+    *bitsp = bits | mask;
     objspace->heap.live_num++;
 
     if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check(STACKFRAME_FOR_GC_MARK))) {
