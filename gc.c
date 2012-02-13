@@ -311,7 +311,6 @@ typedef struct RVALUE {
 
 struct heaps_slot {
     struct heaps_header *membase;
-    RVALUE *slot;
     size_t limit;
     RVALUE *freelist;
     struct heaps_slot *next;
@@ -1136,8 +1135,6 @@ assign_heap_slot(rb_objspace_t *objspace)
     if (heaps) heaps->prev = slot;
     heaps = slot;
 
-    p = membase->rvalues;
-
     lo = 0;
     hi = heaps_used;
     while (lo < hi) {
@@ -1159,11 +1156,11 @@ assign_heap_slot(rb_objspace_t *objspace)
     }
     objspace->heap.sorted[hi] = membase;
     slot->membase = membase;
-    slot->slot = p;
     slot->limit = objs;
     membase->base = slot;
     memset(slot->bits, 0, HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
     objspace->heap.free_num += objs;
+    p = membase->rvalues;
     pend = p + objs;
     if (lomem == 0 || lomem > p) lomem = p;
     if (himem < pend) himem = pend;
@@ -2154,8 +2151,7 @@ free_unused_heaps(rb_objspace_t *objspace)
 static void
 gc_clear_slot_bits(struct heaps_slot *slot)
 {
-    memset(GET_HEAP_BITMAP(slot->slot), 0,
-           HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
+    memset(slot->bits, 0, HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
 }
 
 static void
@@ -2167,7 +2163,7 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
     int deferred;
     uintptr_t *bits;
 
-    p = sweep_slot->slot; pend = p + sweep_slot->limit;
+    p = sweep_slot->membase->rvalues; pend = p + HEAP_OBJ_LIMIT;
     bits = GET_HEAP_BITMAP(p);
     while (p < pend) {
         if ((!(MARKED_IN_BITMAP(bits, p))) && BUILTIN_TYPE(p) != T_ZOMBIE) {
@@ -3278,7 +3274,7 @@ is_dead_object(rb_objspace_t *objspace, VALUE ptr)
     if (!is_lazy_sweeping(objspace) || MARKED_IN_BITMAP(GET_HEAP_BITMAP(ptr), ptr))
 	return FALSE;
     while (slot) {
-	if ((VALUE)slot->slot <= ptr && ptr < (VALUE)(slot->slot + slot->limit))
+	if ((VALUE)slot->membase->rvalues <= ptr && ptr < (VALUE)(slot->membase->rvalues + HEAP_OBJ_LIMIT))
 	    return TRUE;
 	slot = slot->next;
     }
