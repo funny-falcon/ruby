@@ -1735,6 +1735,20 @@ rb_gc_mark_maybe(VALUE obj)
 }
 
 static void
+gc_push_mark(rb_objspace_t *objspace, VALUE ptr)
+{
+    if (!mark_stack_overflow) {
+        if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
+            *mark_stack_ptr = ptr;
+            mark_stack_ptr++;
+        }
+        else {
+            mark_stack_overflow = 1;
+        }
+    }
+}
+
+static void
 gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
 {
     register uintptr_t *bitsp;
@@ -1750,18 +1764,11 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
     objspace->heap.live_num++;
 
     if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check(STACKFRAME_FOR_GC_MARK))) {
-	if (!mark_stack_overflow) {
-	    if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
-		*mark_stack_ptr = ptr;
-		mark_stack_ptr++;
-	    }
-	    else {
-		mark_stack_overflow = 1;
-	    }
-	}
-	return;
+        gc_push_mark(objspace, ptr);
     }
-    gc_mark_children(objspace, ptr, lev+1);
+    else {
+        gc_mark_children(objspace, ptr, lev+1);
+    }
 }
 
 void
