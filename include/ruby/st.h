@@ -102,7 +102,7 @@ struct st_table {
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)
 
-enum st_retval {ST_CONTINUE, ST_STOP, ST_DELETE, ST_CHECK};
+enum st_retval {ST_CONTINUE, ST_STOP, ST_DELETE, ST_DELETE_SAFE, ST_CHECK};
 
 st_table *st_init_table(const struct st_hash_type *);
 st_table *st_init_table_with_size(const struct st_hash_type *, st_index_t);

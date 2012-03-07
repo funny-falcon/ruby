@@ -709,6 +709,7 @@ st_delete(register st_table *table, register st_data_t *key, st_data_t *value)
 	if (i < table->num_entries) {
 	    if (value != 0) *value = PVAL(table, i);
 	    remove_packed_entry(table, i);
+	    table->num_entries--;
 	    return 1;
         }
         if (value != 0) *value = 0;
@@ -861,6 +862,112 @@ st_update(st_table *table, st_data_t key, int (*func)(st_data_t key, st_data_t *
 	}
 	return 1;
     }
+}
+
+int
+st_foreach_check(st_table *table, int (*func)(ANYARGS), st_data_t arg, st_data_t never)
+{
+    st_table_entry *ptr, **last, *tmp;
+    enum st_retval retval;
+    st_index_t i;
+
+    if (table->entries_packed) {
+        for (i = 0; i < table->num_entries; i++) {
+            st_index_t j;
+            st_data_t key, val;
+            key = PKEY(table, i);
+            val = PVAL(table, i);
+	    if (key == never) continue;
+            retval = (*func)(key, val, arg);
+	    if (!table->entries_packed) {
+		FIND_ENTRY(table, ptr, key, i);
+		if (!ptr && (retval == ST_CHECK || ST_DELETE_SAFE))
+		    goto deleted;
+		if (retval == ST_CHECK)
+		    goto unpack_continue;
+		if (retval == ST_DELETE_SAFE)
+		    goto unpack_delete_safe;
+		goto unpacked;
+	    }
+            switch (retval) {
+	      case ST_CHECK:	/* check if hash is modified during iteration */
+		if (PKEY(table, i) == never)
+		    break;
+		i = find_packed_index(table, key);
+		if (i == table->num_entries) {
+		    goto deleted;
+                }
+                if (j == table->num_entries) {
+		/* fall through */
+	      case ST_CONTINUE:
+		break;
+	      case ST_STOP:
+		return 0;
+	      case ST_DELETE:
+		remove_packed_entry(table, i);
+                i--;
+                break;
+	      case ST_DELETE_SAFE:
+		PKEY_SET(table, i, never);
+		break;
+            }
+        }
+        return 0;
+    }
+    else {
+	ptr = table->head;
+    }
+
+    if (ptr != 0) {
+	do {
+	    i = ptr->hash % table->num_bins;
+	    retval = (*func)(ptr->key, ptr->record, arg);
+	  unpacked:
+	    switch (retval) {
+	      case ST_CHECK:	/* check if hash is modified during iteration */
+		for (tmp = table->bins[i]; tmp != ptr; tmp = tmp->next) {
+		    if (!tmp) {
+		      deleted:
+			/* call func with error notice */
+			retval = (*func)(0, 0, arg, 1);
+			return 1;
+		    }
+		}
+		/* fall through */
+	      case ST_CONTINUE:
+	      unpacked_continue:
+		ptr = ptr->fore;
+		break;
+	      case ST_STOP:
+		return 0;
+	      case ST_DELETE:
+		last = &table->bins[ptr->hash % table->num_bins];
+		for (; (tmp = *last) != 0; last = &tmp->next) {
+		    if (ptr == tmp) {
+			tmp = ptr->fore;
+			*last = ptr->next;
+			remove_entry(table, ptr);
+			st_free_entry(ptr);
+			if (ptr == tmp) return 0;
+			ptr = tmp;
+			break;
+		    }
+		}
+		break;
+	      case ST_DELETE_SAFE:
+		last = &table->bins[ptr->hash % table->num_bins];
+		for(; (tmp = *last) != 0; last = &tmp->next) {
+		    if (ptr == tmp) {
+			remove_entry(table, ptr);
+			ptr->key = ptr->record = never;
+			break;
+		    }
+		}
+		break;
+	    }
+	} while (ptr && table->head);
+    }
+    return 0;
 }
 
 int
