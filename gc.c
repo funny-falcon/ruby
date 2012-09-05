@@ -1565,7 +1565,9 @@ void
 rb_free_m_table(sa_table *tbl)
 {
     SA_FOREACH_START(tbl);
-    rb_free_method_entry((rb_method_entry_t*)value);
+    if (!((rb_method_entry_t*)value)->mark) {
+	rb_free_method_entry((rb_method_entry_t*)value);
+    }
     SA_FOREACH_END();
     sa_clear(tbl);
 }
