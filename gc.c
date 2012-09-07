@@ -513,7 +513,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 
 #define HEAP_OBJ_LIMIT (unsigned int)(HEAP_SIZE / sizeof(struct RVALUE))
 
-extern st_table *rb_class_tbl;
+extern sa_table rb_class_tbl;
 
 int ruby_disable_gc_stress = 0;
 
@@ -1466,6 +1466,15 @@ mark_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
     st_foreach(tbl, mark_entry, (st_data_t)&arg);
 }
 
+static void
+mark_sa_tbl(rb_objspace_t *objspace, sa_table *tbl, int lev)
+{
+    if (!tbl) return;
+    SA_FOREACH_START(tbl);
+    gc_mark(objspace, (VALUE)value, lev);
+    SA_FOREACH_END();
+}
+
 static int
 mark_key(VALUE key, VALUE value, st_data_t data)
 {
@@ -1544,74 +1553,50 @@ rb_mark_method_entry(const rb_method_entry_t *me)
     mark_method_entry(&rb_objspace, me, 0);
 }
 
-static int
-mark_method_entry_i(ID key, const rb_method_entry_t *me, st_data_t data)
-{
-    struct mark_tbl_arg *arg = (void*)data;
-    mark_method_entry(arg->objspace, me, arg->lev);
-    return ST_CONTINUE;
-}
-
 static void
-mark_m_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
+mark_m_tbl(rb_objspace_t *objspace, sa_table *tbl, int lev)
 {
-    struct mark_tbl_arg arg;
-    if (!tbl) return;
-    arg.objspace = objspace;
-    arg.lev = lev;
-    st_foreach(tbl, mark_method_entry_i, (st_data_t)&arg);
-}
-
-static int
-free_method_entry_i(ID key, rb_method_entry_t *me, st_data_t data)
-{
-    rb_free_method_entry(me);
-    return ST_CONTINUE;
+    SA_FOREACH_START(tbl);
+    mark_method_entry(objspace, (const rb_method_entry_t*)value, lev);
+    SA_FOREACH_END();
 }
 
 void
-rb_free_m_table(st_table *tbl)
+rb_free_m_table(sa_table *tbl)
 {
-    st_foreach(tbl, free_method_entry_i, 0);
-    st_free_table(tbl);
-}
-
-static int
-mark_const_entry_i(ID key, const rb_const_entry_t *ce, st_data_t data)
-{
-    struct mark_tbl_arg *arg = (void*)data;
-    gc_mark(arg->objspace, ce->value, arg->lev);
-    return ST_CONTINUE;
+    SA_FOREACH_START(tbl);
+    rb_free_method_entry((rb_method_entry_t*)value);
+    SA_FOREACH_END();
+    sa_clear(tbl);
 }
 
 static void
-mark_const_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
+mark_const_tbl(rb_objspace_t *objspace, sa_table *tbl, int lev)
 {
-    struct mark_tbl_arg arg;
-    if (!tbl) return;
-    arg.objspace = objspace;
-    arg.lev = lev;
-    st_foreach(tbl, mark_const_entry_i, (st_data_t)&arg);
-}
-
-static int
-free_const_entry_i(ID key, rb_const_entry_t *ce, st_data_t data)
-{
-    xfree(ce);
-    return ST_CONTINUE;
+    SA_FOREACH_START(tbl);
+    gc_mark(objspace, ((const rb_const_entry_t*)value)->value, lev);
+    SA_FOREACH_END();
 }
 
 void
-rb_free_const_table(st_table *tbl)
+rb_free_const_table(sa_table *tbl)
 {
-    st_foreach(tbl, free_const_entry_i, 0);
-    st_free_table(tbl);
+    SA_FOREACH_START(tbl);
+    xfree((rb_const_entry_t*)value);
+    SA_FOREACH_END();
+    sa_clear(tbl);
 }
 
 void
 rb_mark_tbl(st_table *tbl)
 {
     mark_tbl(&rb_objspace, tbl, 0);
+}
+
+void
+rb_mark_sa_tbl(sa_table *tbl)
+{
+    mark_sa_tbl(&rb_objspace, tbl, 0);
 }
 
 void
@@ -1819,7 +1804,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
       case T_CLASS:
       case T_MODULE:
 	mark_m_tbl(objspace, RCLASS_M_TBL(obj), lev);
-	mark_tbl(objspace, RCLASS_IV_TBL(obj), lev);
+	mark_sa_tbl(objspace, RCLASS_IV_TBL(obj), lev);
 	mark_const_tbl(objspace, RCLASS_CONST_TBL(obj), lev);
 	ptr = RCLASS_SUPER(obj);
 	goto again;
@@ -2286,15 +2271,9 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
       case T_CLASS:
 	rb_clear_cache_by_class((VALUE)obj);
 	rb_free_m_table(RCLASS_M_TBL(obj));
-	if (RCLASS_IV_TBL(obj)) {
-	    st_free_table(RCLASS_IV_TBL(obj));
-	}
-	if (RCLASS_CONST_TBL(obj)) {
-	    rb_free_const_table(RCLASS_CONST_TBL(obj));
-	}
-	if (RCLASS_IV_INDEX_TBL(obj)) {
-	    st_free_table(RCLASS_IV_INDEX_TBL(obj));
-	}
+        sa_clear(RCLASS_IV_TBL(obj));
+        rb_free_const_table(RCLASS_CONST_TBL(obj));
+        sa_clear(RCLASS_IV_INDEX_TBL(obj));
         xfree(RANY(obj)->as.klass.ptr);
 	break;
       case T_STRING:
@@ -2347,7 +2326,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	break;
       case T_ICLASS:
 	/* iClass shares table with the module */
-	xfree(RANY(obj)->as.klass.ptr);
 	break;
 
       case T_FLOAT:
@@ -2458,7 +2436,7 @@ gc_marks(rb_objspace_t *objspace)
     rb_mark_end_proc();
     rb_gc_mark_global_tbl();
 
-    mark_tbl(objspace, rb_class_tbl, 0);
+    mark_sa_tbl(objspace, &rb_class_tbl, 0);
 
     /* mark generic instance variables for special constants */
     rb_mark_generic_ivar_tbl();
