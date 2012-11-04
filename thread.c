@@ -4070,6 +4070,16 @@ rb_mutex_wait_for(VALUE time)
     return Qnil;
 }
 
+static VALUE
+wrap_mutex_lock(VALUE self)
+{
+    if (rb_block_given_p()) {
+	rb_ensure(rb_yield, Qnil, rb_mutex_lock, self);
+	return self;
+    }
+    return rb_mutex_lock(self);
+}
+
 VALUE
 rb_mutex_sleep(VALUE self, VALUE timeout)
 {
@@ -4082,10 +4092,10 @@ rb_mutex_sleep(VALUE self, VALUE timeout)
     rb_mutex_unlock(self);
     beg = time(0);
     if (NIL_P(timeout)) {
-	rb_ensure(rb_mutex_sleep_forever, Qnil, rb_mutex_lock, self);
+	rb_ensure(rb_mutex_sleep_forever, Qnil, wrap_mutex_lock, self);
     }
     else {
-	rb_ensure(rb_mutex_wait_for, (VALUE)&t, rb_mutex_lock, self);
+	rb_ensure(rb_mutex_wait_for, (VALUE)&t, wrap_mutex_lock, self);
     }
     end = time(0) - beg;
     return INT2FIX(end);
