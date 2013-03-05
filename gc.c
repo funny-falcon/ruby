@@ -20,6 +20,7 @@
 #include "vm_core.h"
 #include "internal.h"
 #include "gc.h"
+#include "pool_alloc.h"
 #include "constant.h"
 #include "ruby_atomic.h"
 #include <stdio.h>
@@ -37,7 +38,12 @@
 
 #if defined _WIN32 || defined __CYGWIN__
 #include <windows.h>
+#elif defined(HAVE_POSIX_MEMALIGN)
+#elif defined(HAVE_MEMALIGN)
+#include <malloc.h>
 #endif
+static void aligned_free(void *);
+static void *aligned_malloc(size_t alignment, size_t size);
 
 #ifdef HAVE_VALGRIND_MEMCHECK_H
 # include <valgrind/memcheck.h>
@@ -348,6 +354,24 @@ typedef struct mark_stack {
 
 #define CALC_EXACT_MALLOC_SIZE 0
 
+#ifdef POOL_ALLOC_API
+/* POOL ALLOC API */
+#define POOL_ALLOC_PART 1
+#include "pool_alloc.inc.h"
+#undef POOL_ALLOC_PART
+
+typedef struct pool_layout_t pool_layout_t;
+struct pool_layout_t {
+    pool_header
+      p6,  /* st_table && st_table_entry */
+      p11;  /* st_table.bins init size */
+} pool_layout = {
+    INIT_POOL(void*[6]),
+    INIT_POOL(void*[11])
+};
+static void pool_finalize_header(pool_header *header);
+#endif
+
 typedef struct rb_objspace {
     struct {
 	size_t limit;
@@ -357,6 +381,9 @@ typedef struct rb_objspace {
 	size_t allocations;
 #endif
     } malloc_params;
+#ifdef POOL_ALLOC_API
+    pool_layout_t *pool_headers;
+#endif
     struct {
 	size_t increment;
 	struct heaps_slot *ptr;
@@ -400,7 +427,11 @@ typedef struct rb_objspace {
 #define ruby_initial_gc_stress	initial_params.gc_stress
 int *ruby_initial_gc_stress_ptr = &ruby_initial_gc_stress;
 #else
+#  ifdef POOL_ALLOC_API
+static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, &pool_layout, {HEAP_MIN_SLOTS}};
+#  else
 static rb_objspace_t rb_objspace = {{GC_MALLOC_LIMIT}, {HEAP_MIN_SLOTS}};
+#  endif
 int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #endif
 #define malloc_limit		objspace->malloc_params.limit
@@ -433,6 +464,10 @@ rb_objspace_alloc(void)
     memset(objspace, 0, sizeof(*objspace));
     malloc_limit = initial_malloc_limit;
     ruby_gc_stress = ruby_initial_gc_stress;
+#ifdef POOL_ALLOC_API
+    objspace->pool_headers = (pool_layout_t*) malloc(sizeof(pool_layout));
+    memcpy(objspace->pool_headers, &pool_layout, sizeof(pool_layout));
+#endif
 
     return objspace;
 }
@@ -514,6 +549,13 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps = 0;
     }
     free_stack_chunks(&objspace->mark_stack);
+#ifdef POOL_ALLOC_API
+    if (objspace->pool_headers) {
+        pool_finalize_header(&objspace->pool_headers->p6);
+        pool_finalize_header(&objspace->pool_headers->p11);
+        free(objspace->pool_headers);
+    }
+#endif
     free(objspace);
 }
 #endif
@@ -536,7 +578,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 
 #define HEAP_OBJ_LIMIT (unsigned int)(HEAP_SIZE / sizeof(struct RVALUE))
 
-extern st_table *rb_class_tbl;
+extern sa_table rb_class_tbl;
 
 int ruby_disable_gc_stress = 0;
 
@@ -917,6 +959,27 @@ ruby_xfree(void *x)
 	vm_xfree(&rb_objspace, x);
 }
 
+#ifdef POOL_ALLOC_API
+/* POOL ALLOC API */
+#define POOL_ALLOC_PART 2
+#include "pool_alloc.inc.h"
+#undef POOL_ALLOC_PART
+
+void
+ruby_xpool_free(void *ptr)
+{
+    pool_free_entry((void**)ptr);
+}
+
+#define CONCRET_POOL_MALLOC(pnts) \
+void * ruby_xpool_malloc_##pnts##p () { \
+    return pool_alloc_entry(&rb_objspace.pool_headers->p##pnts ); \
+}
+CONCRET_POOL_MALLOC(6)
+CONCRET_POOL_MALLOC(11)
+#undef CONCRET_POOL_MALLOC
+
+#endif
 
 /*
  *  call-seq:
@@ -1029,6 +1092,55 @@ allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
 	rb_memerror();
     }
     heaps_length = next_heaps_length;
+}
+
+static void *
+aligned_malloc(size_t alignment, size_t size)
+{
+    void *res;
+
+#if defined __MINGW32__
+    res = __mingw_aligned_malloc(size, alignment);
+#elif defined _WIN32 && !defined __CYGWIN__
+    res = _aligned_malloc(size, alignment);
+#elif defined(HAVE_POSIX_MEMALIGN)
+    if (posix_memalign(&res, alignment, size) == 0) {
+        return res;
+    }
+    else {
+        return NULL;
+    }
+#elif defined(HAVE_MEMALIGN)
+    res = memalign(alignment, size);
+#else
+    char* aligned;
+    res = malloc(alignment + size + sizeof(void*));
+    aligned = (char*)res + alignment + sizeof(void*);
+    aligned -= ((VALUE)aligned & (alignment - 1));
+    ((void**)aligned)[-1] = res;
+    res = (void*)aligned;
+#endif
+
+#if defined(_DEBUG) || defined(GC_DEBUG)
+    /* alignment must be a power of 2 */
+    assert((alignment - 1) & alignment == 0);
+    assert(alignment % sizeof(void*) == 0);
+#endif
+    return res;
+}
+
+static void
+aligned_free(void *ptr)
+{
+#if defined __MINGW32__
+    __mingw_aligned_free(ptr);
+#elif defined _WIN32 && !defined __CYGWIN__
+    _aligned_free(ptr);
+#elif defined(HAVE_MEMALIGN) || defined(HAVE_POSIX_MEMALIGN)
+    free(ptr);
+#else
+    free(((void**)ptr)[-1]);
+#endif
 }
 
 static void
@@ -1589,6 +1701,15 @@ mark_tbl(rb_objspace_t *objspace, st_table *tbl)
     st_foreach(tbl, mark_entry, (st_data_t)&arg);
 }
 
+static void
+mark_sa_tbl(rb_objspace_t *objspace, sa_table *tbl)
+{
+    if (!tbl) return;
+    SA_FOREACH_START(tbl);
+    gc_mark(objspace, (VALUE)value);
+    SA_FOREACH_END();
+}
+
 static int
 mark_key(VALUE key, VALUE value, st_data_t data)
 {
@@ -1665,74 +1786,52 @@ rb_mark_method_entry(const rb_method_entry_t *me)
     mark_method_entry(&rb_objspace, me);
 }
 
-static int
-mark_method_entry_i(ID key, const rb_method_entry_t *me, st_data_t data)
-{
-    struct mark_tbl_arg *arg = (void*)data;
-    mark_method_entry(arg->objspace, me);
-    return ST_CONTINUE;
-}
-
 static void
-mark_m_tbl(rb_objspace_t *objspace, st_table *tbl)
+mark_m_tbl(rb_objspace_t *objspace, sa_table *tbl)
 {
-    struct mark_tbl_arg arg;
-    if (!tbl) return;
-    arg.objspace = objspace;
-    st_foreach(tbl, mark_method_entry_i, (st_data_t)&arg);
+    SA_FOREACH_START(tbl);
+    mark_method_entry(objspace, (const rb_method_entry_t*)value);
+    SA_FOREACH_END();
 }
 
-static int
-free_method_entry_i(ID key, rb_method_entry_t *me, st_data_t data)
+void
+rb_free_m_table(sa_table *tbl)
 {
-    if (!me->mark) {
-	rb_free_method_entry(me);
+    SA_FOREACH_START(tbl);
+    if (!((rb_method_entry_t*)value)->mark) {
+	rb_free_method_entry((rb_method_entry_t*)value);
     }
-    return ST_CONTINUE;
-}
-
-void
-rb_free_m_table(st_table *tbl)
-{
-    st_foreach(tbl, free_method_entry_i, 0);
-    st_free_table(tbl);
-}
-
-static int
-mark_const_entry_i(ID key, const rb_const_entry_t *ce, st_data_t data)
-{
-    struct mark_tbl_arg *arg = (void*)data;
-    gc_mark(arg->objspace, ce->value);
-    return ST_CONTINUE;
+    SA_FOREACH_END();
+    sa_clear(tbl);
 }
 
 static void
-mark_const_tbl(rb_objspace_t *objspace, st_table *tbl)
+mark_const_tbl(rb_objspace_t *objspace, sa_table *tbl)
 {
-    struct mark_tbl_arg arg;
-    if (!tbl) return;
-    arg.objspace = objspace;
-    st_foreach(tbl, mark_const_entry_i, (st_data_t)&arg);
-}
-
-static int
-free_const_entry_i(ID key, rb_const_entry_t *ce, st_data_t data)
-{
-    xfree(ce);
-    return ST_CONTINUE;
+    SA_FOREACH_START(tbl);
+    gc_mark(objspace, ((const rb_const_entry_t*)value)->value);
+    SA_FOREACH_END();
 }
 
 void
-rb_free_const_table(st_table *tbl)
+rb_free_const_table(sa_table *tbl)
 {
-    st_foreach(tbl, free_const_entry_i, 0);
-    st_free_table(tbl);
+    SA_FOREACH_START(tbl);
+    xfree((rb_const_entry_t*)value);
+    SA_FOREACH_END();
+    sa_clear(tbl);
 }
 
 void
 rb_mark_tbl(st_table *tbl)
 {
     mark_tbl(&rb_objspace, tbl);
+}
+
+void
+rb_mark_sa_tbl(sa_table *tbl)
+{
+    mark_sa_tbl(&rb_objspace, tbl);
 }
 
 void
@@ -1928,7 +2027,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr)
       case T_CLASS:
       case T_MODULE:
 	mark_m_tbl(objspace, RCLASS_M_TBL(obj));
-	mark_tbl(objspace, RCLASS_IV_TBL(obj));
+	mark_sa_tbl(objspace, RCLASS_IV_TBL(obj));
 	mark_const_tbl(objspace, RCLASS_CONST_TBL(obj));
 	ptr = RCLASS_SUPER(obj);
 	goto again;
@@ -2395,15 +2494,9 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
       case T_CLASS:
 	rb_clear_cache_by_class((VALUE)obj);
 	rb_free_m_table(RCLASS_M_TBL(obj));
-	if (RCLASS_IV_TBL(obj)) {
-	    st_free_table(RCLASS_IV_TBL(obj));
-	}
-	if (RCLASS_CONST_TBL(obj)) {
-	    rb_free_const_table(RCLASS_CONST_TBL(obj));
-	}
-	if (RCLASS_IV_INDEX_TBL(obj)) {
-	    st_free_table(RCLASS_IV_INDEX_TBL(obj));
-	}
+        sa_clear(RCLASS_IV_TBL(obj));
+        rb_free_const_table(RCLASS_CONST_TBL(obj));
+        sa_clear(RCLASS_IV_INDEX_TBL(obj));
         xfree(RANY(obj)->as.klass.ptr);
 	break;
       case T_STRING:
@@ -2456,7 +2549,6 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	break;
       case T_ICLASS:
 	/* iClass shares table with the module */
-	xfree(RANY(obj)->as.klass.ptr);
 	break;
 
       case T_FLOAT:
@@ -2565,7 +2657,7 @@ gc_marks(rb_objspace_t *objspace)
     rb_mark_end_proc();
     rb_gc_mark_global_tbl();
 
-    mark_tbl(objspace, rb_class_tbl);
+    mark_sa_tbl(objspace, &rb_class_tbl);
 
     /* mark generic instance variables for special constants */
     rb_mark_generic_ivar_tbl();

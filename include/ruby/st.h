@@ -36,7 +36,7 @@ typedef unsigned long st_data_t;
 #elif SIZEOF_LONG_LONG == SIZEOF_VOIDP
 typedef unsigned LONG_LONG st_data_t;
 #else
-# error ---->> st.c requires sizeof(void*) == sizeof(long) to be compiled. <<----
+# error ---->> st.c requires sizeof(void*) == sizeof(long) or sizeof(LONG_LONG) to be compiled. <<----
 #endif
 #define ST_DATA_T_DEFINED
 
@@ -74,6 +74,11 @@ struct st_hash_type {
 
 #define ST_INDEX_BITS (sizeof(st_index_t) * CHAR_BIT)
 
+typedef struct st_packed_entry {
+    st_index_t hash;
+    st_data_t key, val;
+} st_packed_entry;
+
 struct st_table {
     const struct st_hash_type *type;
     st_index_t num_bins;
@@ -91,8 +96,17 @@ struct st_table {
     __extension__
 #endif
     st_index_t num_entries : ST_INDEX_BITS - 1;
-    struct st_table_entry **bins;
-    struct st_table_entry *head, *tail;
+    union {
+	struct {
+	    struct st_table_entry **bins;
+	    struct st_table_entry *head, *tail;
+	} big;
+	struct {
+	    struct st_packed_entry *entries;
+	    st_index_t real_entries;
+	} packed;
+	st_packed_entry upacked;
+    } as;
 };
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)
@@ -114,6 +128,7 @@ int st_insert2(st_table *, st_data_t, st_data_t, st_data_t (*)(st_data_t));
 int st_lookup(st_table *, st_data_t, st_data_t *);
 int st_get_key(st_table *, st_data_t, st_data_t *);
 int st_foreach(st_table *, int (*)(ANYARGS), st_data_t);
+int st_foreach_check(st_table *, int (*)(ANYARGS), st_data_t, st_data_t);
 int st_reverse_foreach(st_table *, int (*)(ANYARGS), st_data_t);
 void st_add_direct(st_table *, st_data_t, st_data_t);
 void st_free_table(st_table *);
@@ -135,6 +150,51 @@ st_index_t st_hash_start(st_index_t h);
 #if defined __GNUC__ && __GNUC__ >= 4
 #pragma GCC visibility pop
 #endif
+
+typedef unsigned int sa_index_t;
+#define SA_STOP     ST_STOP
+#define SA_CONTINUE ST_CONTINUE
+
+#define SA_EMPTY   0
+
+typedef struct sa_entry {
+    sa_index_t next;
+    sa_index_t key;
+    st_data_t value;
+} sa_entry;
+
+typedef struct sa_table {
+    sa_index_t num_bins;
+    sa_index_t num_entries;
+    sa_index_t free_pos;
+    sa_entry *entries;
+} sa_table;
+
+#define SA_EMPTY_TABLE {0, 0, 0, 0};
+void sa_init_table(sa_table *, sa_index_t);
+sa_table *sa_new_table();
+int  sa_insert(sa_table *, sa_index_t, st_data_t);
+int  sa_lookup(sa_table *, sa_index_t, st_data_t *);
+int  sa_delete(sa_table *, sa_index_t, st_data_t *);
+void sa_clear(sa_table *);
+void sa_clear_no_free(sa_table *);
+void sa_free_table(sa_table *);
+int  sa_foreach(sa_table *, int (*)(ANYARGS), st_data_t);
+size_t sa_memsize(const sa_table *);
+sa_table *sa_copy(sa_table*);
+void sa_copy_to(sa_table*, sa_table*);
+typedef int (*sa_iter_func)(sa_index_t key, st_data_t val, st_data_t arg);
+
+#define SA_FOREACH_START_I(table, entry) do { \
+    sa_table *T##entry = (table); \
+    sa_index_t K##entry; \
+    for(K##entry = 0; K##entry < T##entry->num_bins; K##entry++) { \
+	sa_entry *entry = T##entry->entries + K##entry; \
+	if (entry->next != SA_EMPTY) { \
+	    st_data_t value = entry->value
+#define SA_FOREACH_END() } } } while(0)
+
+#define SA_FOREACH_START(table) SA_FOREACH_START_I(table, entry)
 
 #if defined(__cplusplus)
 #if 0
