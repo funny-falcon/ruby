@@ -953,6 +953,50 @@ st_delete_safe(register st_table *table, register st_data_t *key, st_data_t *val
     return 0;
 }
 
+int
+st_shift(register st_table *table, register st_data_t *key, st_data_t *value)
+{
+    st_index_t hash_val;
+    st_table_entry **prev;
+    register st_table_entry *ptr;
+
+    if (table->num_entries == 0) {
+        if (value != 0) *value = 0;
+        return 0;
+    }
+
+    if (ULTRAPACKED(table)) {
+	if (value != 0) *value = UPVAL(table);
+	*key = UPKEY(table);
+	remove_upacked_entry(table);
+	return 1;
+    }
+
+    if (table->entries_packed) {
+        if (value != 0) *value = PVAL(table, 0);
+        *key = PKEY(table, 0);
+        remove_packed_entry(table, 0);
+        return 1;
+    }
+
+    hash_val = do_hash(table->head->key, table);
+    prev = &table->bins[hash_val % table->num_bins];
+    for (;(ptr = *prev) != 0; prev = &ptr->next) {
+	if (ptr == table->head) {
+	    *prev = ptr->next;
+            if (value != 0) *value = ptr->record;
+            *key = ptr->key;
+            remove_entry(table, ptr);
+            st_free_entry(ptr);
+            return 1;
+	}
+    }
+
+    /* if hash is not consistent and need to be rehashed */
+    if (value != 0) *value = 0;
+    return 0;
+}
+
 void
 st_cleanup_safe(st_table *table, st_data_t never)
 {
