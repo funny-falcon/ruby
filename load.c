@@ -34,21 +34,120 @@ rb_get_load_path(void)
     return load_path;
 }
 
-VALUE
-rb_get_expanded_load_path(void)
+enum expand_type {
+    EXPAND_ALL,
+    EXPAND_RELATIVE,
+    EXPAND_HOME,
+    EXPAND_NON_CACHE
+};
+
+/* Construct expanded load path and store it to cache.
+   We rebuild load path partially if the cache is invalid.
+   We don't cache non string object and expand it every time. We ensure that
+   string objects in $LOAD_PATH are frozen.
+ */
+static void
+rb_construct_expanded_load_path(int type, int *has_relative, int *has_non_cache)
 {
-    VALUE load_path = rb_get_load_path();
+    rb_vm_t *vm = GET_VM();
+    VALUE load_path = vm->load_path;
+    VALUE expanded_load_path = vm->expanded_load_path;
     VALUE ary;
     long i;
+    int level = rb_safe_level();
 
     ary = rb_ary_new2(RARRAY_LEN(load_path));
     for (i = 0; i < RARRAY_LEN(load_path); ++i) {
-	VALUE path = rb_file_expand_path_fast(RARRAY_PTR(load_path)[i], Qnil);
-	rb_str_freeze(path);
-	rb_ary_push(ary, path);
+	VALUE path, as_str, expanded_path;
+	int is_string, non_cache;
+	char *as_cstr;
+	as_str = path = RARRAY_PTR(load_path)[i];
+	is_string = RB_TYPE_P(path, T_STRING) ? 1 : 0;
+	non_cache = !is_string ? 1 : 0;
+	as_str = rb_get_path_check_to_string(path, level);
+	as_cstr = RSTRING_PTR(as_str);
+
+	if (!non_cache) {
+	    if ((type == EXPAND_RELATIVE &&
+		    rb_is_absolute_path(as_cstr)) ||
+		(type == EXPAND_HOME &&
+		    (!as_cstr[0] || as_cstr[0] != '~')) ||
+		(type == EXPAND_NON_CACHE)) {
+		    /* Use cached expanded path. */
+		    rb_ary_push(ary, RARRAY_PTR(expanded_load_path)[i]);
+		    continue;
+	    }
+	}
+	if (!*has_relative && !rb_is_absolute_path(as_cstr))
+	    *has_relative = 1;
+	if (!*has_non_cache && non_cache)
+	    *has_non_cache = 1;
+	/* Freeze only string object. We expand other objects every time. */
+	if (is_string)
+	    rb_str_freeze(path);
+	as_str = rb_get_path_check_convert(path, as_str, level);
+	expanded_path = rb_file_expand_path_fast(as_str, Qnil);
+	rb_str_freeze(expanded_path);
+	rb_ary_push(ary, expanded_path);
     }
     rb_obj_freeze(ary);
-    return ary;
+    vm->expanded_load_path = ary;
+    rb_ary_replace(vm->load_path_snapshot, vm->load_path);
+}
+
+static VALUE
+load_path_getcwd(void)
+{
+    char *cwd = my_getcwd();
+    VALUE cwd_str = rb_filesystem_str_new_cstr(cwd);
+    xfree(cwd);
+    return cwd_str;
+}
+
+VALUE
+rb_get_expanded_load_path(void)
+{
+    rb_vm_t *vm = GET_VM();
+    const VALUE non_cache = Qtrue;
+
+    if (!rb_ary_dup_of_p(vm->load_path_snapshot, vm->load_path)) {
+	/* The load path was modified. Rebuild the expanded load path. */
+	int has_relative = 0, has_non_cache = 0;
+	rb_construct_expanded_load_path(EXPAND_ALL, &has_relative, &has_non_cache);
+	if (has_relative) {
+	    vm->load_path_check_cache = load_path_getcwd();
+	}
+	else if (has_non_cache) {
+	    /* Non string object. */
+	    vm->load_path_check_cache = non_cache;
+	}
+	else {
+	    vm->load_path_check_cache = 0;
+	}
+    }
+    else if (vm->load_path_check_cache == non_cache) {
+	int has_relative = 1, has_non_cache = 1;
+	/* Expand only non-cacheable objects. */
+	rb_construct_expanded_load_path(EXPAND_NON_CACHE,
+					&has_relative, &has_non_cache);
+    }
+    else if (vm->load_path_check_cache) {
+	int has_relative = 1, has_non_cache = 1;
+	VALUE cwd = load_path_getcwd();
+	if (!rb_str_equal(vm->load_path_check_cache, cwd)) {
+	    /* Current working directory or filesystem encoding was changed.
+	       Expand relative load path and non-cacheable objects again. */
+	    vm->load_path_check_cache = cwd;
+	    rb_construct_expanded_load_path(EXPAND_RELATIVE,
+					    &has_relative, &has_non_cache);
+	}
+	else {
+	    /* Expand only tilde (User HOME) and non-cacheable objects. */
+	    rb_construct_expanded_load_path(EXPAND_HOME,
+					    &has_relative, &has_non_cache);
+	}
+    }
+    return vm->expanded_load_path;
 }
 
 static VALUE
@@ -63,12 +162,320 @@ get_loaded_features(void)
     return GET_VM()->loaded_features;
 }
 
+static void
+reset_loaded_features_snapshot(void)
+{
+    rb_vm_t *vm = GET_VM();
+    rb_ary_replace(vm->loaded_features_snapshot, vm->loaded_features);
+}
+
 static st_table *
 get_loading_table(void)
 {
     return GET_VM()->loading_table;
 }
 
+static inline uint32_t
+fmix_uint(uint32_t val)
+{
+    /* with -O2 even on i386 gcc and clang transform this to
+     * single multiplication 32bit*32bit=64bit */
+    uint64_t res = ((uint64_t)val) * (uint64_t)0x85ebca6b;
+    return (uint32_t)res ^ (uint32_t)(res>>32);
+}
+
+static uint32_t
+fast_string_hash(const char *str, long len)
+{
+    uint32_t res = 0;
+    for(;len > 0; str+=16, len-=16) {
+	uint32_t buf[4] = {0, 0, 0, 0};
+	memcpy(buf, str, len < 16 ? len : 16);
+	res = fmix_uint(res ^ buf[0]);
+	res = fmix_uint(res ^ buf[1]);
+	res = fmix_uint(res ^ buf[2]);
+	res = fmix_uint(res ^ buf[3]);
+    }
+    return res;
+}
+
+/*
+ * We build index for loaded features relying on fact that loaded_feature_path
+ * rechecks feature name. So that, we could store only hash of string instead
+ * of whole string in a hash.
+ * Instead of allocation of array of offsets by each feature, we organize
+ * offsets in a single linked lists - one list per feature - which are stored
+ * in a single array. And we store in a hash positions of head and tail of
+ * this list
+ */
+#define FI_LAST (-1)
+#define FI_DEFAULT_HASH_SIZE   (64)
+#define FI_DEFAULT_LIST_SIZE  (64)
+
+typedef struct features_index_hash_item {
+    uint32_t hash;
+    /* we will store position + 1 in head and tail,
+     * so that if head == 0 then item is free */
+    int head;
+    int tail;
+} fi_hash_item;
+
+typedef struct features_index_hash {
+    int capa;
+    int size;
+    fi_hash_item *items;
+} fi_hash;
+
+static fi_hash_item *
+fi_hash_candidate(fi_hash *index, uint32_t hash)
+{
+    fi_hash_item *items = index->items;
+    int capa_1 = index->capa - 1;
+    int pos = hash & capa_1;
+    if (items[pos].hash != hash && items[pos].head != 0) {
+	/* always odd, so that it has no common diviser with capa*/
+	int step = (hash % capa_1) | 1;
+	do {
+	    pos = (pos + step) & capa_1;
+	} while (items[pos].hash != hash && items[pos].head != 0);
+    }
+    return items + pos;
+}
+
+static void
+fi_hash_rehash(fi_hash *index)
+{
+    fi_hash temp;
+    int i;
+    fi_hash_item *items = index->items;
+    temp.capa = index->capa * 2;
+    temp.size = index->size;
+    temp.items = xcalloc(temp.capa, sizeof(fi_hash_item));
+    for(i=0; i < index->capa; i++) {
+	if (items[i].head) {
+	    fi_hash_item *item = fi_hash_candidate(&temp, items[i].hash);
+	    *item = items[i];
+	}
+    }
+    *index = temp;
+    xfree(items);
+}
+
+static int
+fi_hash_find_head(fi_hash *index, const char *str, long len)
+{
+    uint32_t hash = fast_string_hash(str, len);
+    fi_hash_item *item = fi_hash_candidate(index, hash);
+    return item->head - 1; /* if head==0 then result is FI_LAST */
+}
+
+/* inserts position of tail into hash,
+ * returns previous tail position or FI_LAST */
+static int
+fi_hash_insert_pos(fi_hash *index, const char *str, long len, int pos)
+{
+    fi_hash_item *item;
+    int hash = fast_string_hash(str, len);
+    if (index->size > index->capa / 4 * 3) {
+	fi_hash_rehash(index);
+    }
+    item = fi_hash_candidate(index, hash);
+    if (item->head) {
+	int res = item->tail - 1;
+	item->tail = pos + 1;
+	return res;
+    }
+    else {
+	item->hash = hash;
+	item->head = pos + 1;
+	item->tail = pos + 1;
+	index->size++;
+	return FI_LAST;
+    }
+}
+
+typedef struct features_index_multilist_item {
+    int offset;
+    int next;
+} fi_list_item;
+
+typedef struct features_index_multilist {
+    fi_list_item *items;
+    int capa;
+    int size;
+} fi_list;
+
+static void
+fi_list_insert_offset(fi_list *list, int offset, int prev_pos)
+{
+    if (list->size == list->capa) {
+	REALLOC_N(list->items, fi_list_item, list->capa*2);
+	MEMZERO(list->items + list->capa, fi_list_item, list->capa);
+	list->capa*=2;
+    }
+    list->items[list->size].offset = offset;
+    list->items[list->size].next = FI_LAST;
+    if (prev_pos != FI_LAST) {
+	list->items[prev_pos].next = list->size;
+    }
+    list->size++;
+}
+
+typedef struct features_index {
+    fi_hash hash;
+    fi_list list;
+} st_features_index;
+
+static void
+features_index_free(void *p)
+{
+    if (p) {
+	st_features_index *fi = p;
+	xfree(fi->hash.items);
+	xfree(fi->list.items);
+	xfree(fi);
+    }
+}
+
+static VALUE
+features_index_allocate()
+{
+    st_features_index *index = xcalloc(1, sizeof(st_features_index));
+    index->hash.capa = FI_DEFAULT_HASH_SIZE;
+    index->hash.items = xcalloc(index->hash.capa, sizeof(fi_hash_item));
+    index->list.capa = FI_DEFAULT_LIST_SIZE;
+    index->list.items = xcalloc(index->list.capa, sizeof(fi_list_item));
+    return Data_Wrap_Struct(rb_cObject, 0, features_index_free, index);
+}
+
+static st_features_index *
+get_loaded_features_index_raw(void)
+{
+    st_features_index *index;
+    Data_Get_Struct(GET_VM()->loaded_features_index, st_features_index, index);
+    return index;
+}
+
+static void
+features_index_clear()
+{
+    st_features_index *index = get_loaded_features_index_raw();
+    MEMZERO(index->hash.items, fi_hash_item, index->hash.capa);
+    index->hash.size = 0;
+    MEMZERO(index->list.items, fi_list_item, index->list.capa);
+    index->list.size = 0;
+}
+
+static void
+features_index_add_single(const char *short_feature, long len, int offset)
+{
+    st_features_index *index = get_loaded_features_index_raw();
+    int prev_pos = fi_hash_insert_pos(&index->hash, short_feature, len, index->list.size);
+    fi_list_insert_offset(&index->list, offset, prev_pos);
+}
+
+/* Add to the loaded-features index all the required entries for
+   `feature`, located at `offset` in $LOADED_FEATURES.  We add an
+   index entry at each string `short_feature` for which
+     feature == "#{prefix}#{short_feature}#{e}"
+   where `e` is empty or matches %r{^\.[^./]*$}, and `prefix` is empty
+   or ends in '/'.  This maintains the invariant that `rb_feature_p()`
+   relies on for its fast lookup.
+*/
+static void
+features_index_add(const char *feature_str, long len, int offset)
+{
+    const char *feature_end, *ext, *p;
+
+    feature_end = feature_str + len;
+
+    for (ext = feature_end; ext > feature_str; ext--)
+      if (*ext == '.' || *ext == '/')
+	break;
+    if (*ext != '.')
+      ext = NULL;
+    /* Now `ext` points to the only string matching %r{^\.[^./]*$} that is
+       at the end of `feature`, or is NULL if there is no such string. */
+
+    p = ext ? ext : feature_end;
+    while (1) {
+	p--;
+	while (p >= feature_str && *p != '/')
+	    p--;
+	if (p < feature_str)
+	    break;
+	/* Now *p == '/'.  We reach this point for every '/' in `feature`. */
+	features_index_add_single(p + 1, feature_end - p - 1, offset);
+	if (ext) {
+	    features_index_add_single(p + 1, ext - p - 1, offset);
+	}
+    }
+    features_index_add_single(feature_str, len, offset);
+    if (ext) {
+	features_index_add_single(feature_str, ext - feature_str, offset);
+    }
+}
+
+static fi_list_item
+features_index_find(st_features_index *index, const char *feature, long len)
+{
+    int pos = fi_hash_find_head(&index->hash, feature, len);
+    if (pos == FI_LAST) {
+	fi_list_item res = {FI_LAST, FI_LAST};
+	return res;
+    }
+    else
+	return index->list.items[pos];
+}
+
+static fi_list_item
+features_index_next(st_features_index *index, fi_list_item cur)
+{
+    if (cur.next == FI_LAST) {
+	fi_list_item res = {FI_LAST, FI_LAST};
+	return res;
+    }
+    else
+	return index->list.items[cur.next];
+}
+
+static st_features_index *
+get_loaded_features_index(void)
+{
+    VALUE features;
+    int i;
+    rb_vm_t *vm = GET_VM();
+
+    if (!rb_ary_dup_of_p(vm->loaded_features_snapshot, vm->loaded_features)) {
+	/* The sharing was broken; something (other than us in rb_provide_feature())
+	   modified loaded_features.  Rebuild the index. */
+	features_index_clear();
+	features = vm->loaded_features;
+	for (i = 0; i < RARRAY_LEN(features); i++) {
+	    VALUE entry, as_str;
+	    as_str = entry = rb_ary_entry(features, i);
+	    StringValue(as_str);
+	    if (as_str != entry)
+		rb_ary_store(features, i, as_str);
+	    rb_str_freeze(as_str);
+	    features_index_add(RSTRING_PTR(as_str), RSTRING_LEN(as_str), i);
+	}
+	reset_loaded_features_snapshot();
+    }
+    return get_loaded_features_index_raw();
+}
+
+/* This searches `load_path` for a value such that
+     name == "#{load_path[i]}/#{feature}"
+   if `feature` is a suffix of `name`, or otherwise
+     name == "#{load_path[i]}/#{feature}#{ext}"
+   for an acceptable string `ext`.  It returns
+   `load_path[i].to_str` if found, else 0.
+
+   If type is 's', then `ext` is acceptable only if IS_DLEXT(ext);
+   if 'r', then only if IS_RBEXT(ext); otherwise `ext` may be absent
+   or have any value matching `%r{^\.[^./]*$}`.
+*/
 static VALUE
 loaded_feature_path(const char *name, long vlen, const char *feature, long len,
 		    int type, VALUE load_path)
@@ -88,23 +495,22 @@ loaded_feature_path(const char *name, long vlen, const char *feature, long len,
 	    return 0;
 	plen = e - name - len - 1;
     }
+    if (type == 's' && !IS_DLEXT(&name[plen+len+1])
+     || type == 'r' && !IS_RBEXT(&name[plen+len+1])
+     || name[plen] != '/') {
+       return 0;
+    }
+    /* Now name == "#{prefix}/#{feature}#{ext}" where ext is acceptable
+       (possibly empty) and prefix is some string of length plen. */
+
     for (i = 0; i < RARRAY_LEN(load_path); ++i) {
 	VALUE p = RARRAY_PTR(load_path)[i];
 	const char *s = StringValuePtr(p);
 	long n = RSTRING_LEN(p);
 
-	if (n != plen ) continue;
-	if (n && (strncmp(name, s, n) || name[n] != '/')) continue;
-	switch (type) {
-	  case 's':
-	    if (IS_DLEXT(&name[n+len+1])) return p;
-	    break;
-	  case 'r':
-	    if (IS_RBEXT(&name[n+len+1])) return p;
-	    break;
-	  default:
-	    return p;
-	}
+	if (n != plen) continue;
+	if (n && strncmp(name, s, n)) continue;
+	return p;
     }
     return 0;
 }
@@ -132,10 +538,12 @@ loaded_feature_path_i(st_data_t v, st_data_t b, st_data_t f)
 static int
 rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const char **fn)
 {
-    VALUE v, features, p, load_path = 0;
+    VALUE features,  v, p, load_path = 0;
     const char *f, *e;
     long i, len, elen, n;
     st_table *loading_tbl;
+    st_features_index *features_index;
+    fi_list_item index_list;
     st_data_t data;
     int type;
 
@@ -151,8 +559,43 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 	type = 0;
     }
     features = get_loaded_features();
-    for (i = 0; i < RARRAY_LEN(features); ++i) {
-	v = RARRAY_PTR(features)[i];
+    features_index = get_loaded_features_index();
+
+    index_list = features_index_find(features_index, feature, len);
+    /* We search `features` for an entry such that either
+         "#{features[i]}" == "#{load_path[j]}/#{feature}#{e}"
+       for some j, or
+         "#{features[i]}" == "#{feature}#{e}"
+       Here `e` is an "allowed" extension -- either empty or one
+       of the extensions accepted by IS_RBEXT, IS_SOEXT, or
+       IS_DLEXT.  Further, if `ext && rb` then `IS_RBEXT(e)`,
+       and if `ext && !rb` then `IS_SOEXT(e) || IS_DLEXT(e)`.
+
+       If `expanded`, then only the latter form (without load_path[j])
+       is accepted.  Otherwise either form is accepted, *unless* `ext`
+       is false and an otherwise-matching entry of the first form is
+       preceded by an entry of the form
+         "#{features[i2]}" == "#{load_path[j2]}/#{feature}#{e2}"
+       where `e2` matches %r{^\.[^./]*$} but is not an allowed extension.
+       After a "distractor" entry of this form, only entries of the
+       form "#{feature}#{e}" are accepted.
+
+       In `rb_provide_feature()` and `get_loaded_features_index()` we
+       maintain an invariant that the list `index` will point to at least
+       every entry in `features` which has the form
+         "#{prefix}#{feature}#{e}"
+       where `e` is empty or matches %r{^\.[^./]*$}, and `prefix` is empty
+       or ends in '/'.  This includes both match forms above, as well
+       as any distractors, so we may ignore all other entries in `features`.
+       (since we store only hash value of feature, there could be also
+       other features in the list, but probability of it is very small,
+       and loaded_feature_path will recheck for it)
+     */
+    for (; index_list.offset != FI_LAST ;
+	   index_list = features_index_next(features_index, index_list)) {
+	long index = index_list.offset;
+
+	v = RARRAY_PTR(features)[index];
 	f = StringValuePtr(v);
 	if ((n = RSTRING_LEN(v)) < len) continue;
 	if (strncmp(f, feature, len) != 0) {
@@ -175,6 +618,7 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 	    return 'r';
 	}
     }
+
     loading_tbl = get_loading_table();
     if (loading_tbl) {
 	f = 0;
@@ -183,7 +627,7 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 	    fs.name = feature;
 	    fs.len = len;
 	    fs.type = type;
-	    fs.load_path = load_path ? load_path : rb_get_load_path();
+	    fs.load_path = load_path ? load_path : rb_get_expanded_load_path();
 	    fs.result = 0;
 	    st_foreach(loading_tbl, loaded_feature_path_i, (st_data_t)&fs);
 	    if ((f = fs.result) != 0) {
@@ -233,7 +677,7 @@ rb_feature_provided(const char *feature, const char **loading)
 
     if (*feature == '.' &&
 	(feature[1] == '/' || strncmp(feature+1, "./", 2) == 0)) {
-	fullpath = rb_file_expand_path_fast(rb_str_new2(feature), Qnil);
+	fullpath = rb_file_expand_path_fast(rb_get_path(rb_str_new2(feature)), Qnil);
 	feature = RSTRING_PTR(fullpath);
     }
     if (ext && !strchr(ext, '/')) {
@@ -254,11 +698,20 @@ rb_feature_provided(const char *feature, const char **loading)
 static void
 rb_provide_feature(VALUE feature)
 {
-    if (OBJ_FROZEN(get_loaded_features())) {
+    VALUE features;
+
+    features = get_loaded_features();
+    if (OBJ_FROZEN(features)) {
 	rb_raise(rb_eRuntimeError,
 		 "$LOADED_FEATURES is frozen; cannot append feature");
     }
-    rb_ary_push(get_loaded_features(), feature);
+    rb_str_freeze(feature);
+
+    rb_ary_push(features, feature);
+    StringValue(feature);
+    features_index_add(RSTRING_PTR(feature), RSTRING_LEN(feature), (int)(RARRAY_LEN(features)-1));
+    RB_GC_GUARD(feature);
+    reset_loaded_features_snapshot();
 }
 
 void
@@ -774,10 +1227,15 @@ Init_load()
     rb_alias_variable(rb_intern("$-I"), id_load_path);
     rb_alias_variable(rb_intern("$LOAD_PATH"), id_load_path);
     vm->load_path = rb_ary_new();
+    vm->expanded_load_path = rb_ary_new();
+    vm->load_path_snapshot = rb_ary_new();
+    vm->load_path_check_cache = 0;
 
     rb_define_virtual_variable("$\"", get_loaded_features, 0);
     rb_define_virtual_variable("$LOADED_FEATURES", get_loaded_features, 0);
     vm->loaded_features = rb_ary_new();
+    vm->loaded_features_snapshot = rb_ary_new();
+    vm->loaded_features_index = features_index_allocate();
 
     rb_define_global_function("load", rb_f_load, -1);
     rb_define_global_function("require", rb_f_require, 1);
