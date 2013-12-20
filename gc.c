@@ -1539,6 +1539,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	}
 	rb_class_remove_from_module_subclasses(obj);
 	rb_class_remove_from_super_subclasses(obj);
+	rb_method_cache_clear(obj);
 	if (RANY(obj)->as.klass.ptr)
 	    xfree(RANY(obj)->as.klass.ptr);
 	RANY(obj)->as.klass.ptr = NULL;
@@ -1609,6 +1610,7 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	}
 	rb_class_remove_from_module_subclasses(obj);
 	rb_class_remove_from_super_subclasses(obj);
+	rb_method_cache_clear(obj);
 	xfree(RANY(obj)->as.klass.ptr);
 	RANY(obj)->as.klass.ptr = NULL;
 	break;
