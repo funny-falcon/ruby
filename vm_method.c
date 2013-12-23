@@ -20,11 +20,11 @@ static void rb_vm_check_redefinition_opt_method(const rb_method_entry_t *me, VAL
 #define singleton_undefined idSingleton_method_undefined
 #define attached            id__attached__
 
-struct cache_entry {
-    ID mid;
-    uintptr_t me;
-    VALUE defined_class;
-};
+#if METHOD_CACHE_STATS
+struct rb_meth_cache_stats rb_meth_cache;
+#endif
+
+typedef struct rb_meth_cache_entry cache_entry_t;
 
 #define METHOD_ENTRY(entry) ((rb_method_entry_t*)((entry)->me & ~1))
 #define COLLISION(entry) ((entry).me & 1)
@@ -35,8 +35,20 @@ static void
 rb_mcache_insert(struct rb_meth_cache *cache, ID id, uintptr_t me, VALUE defined_class)
 {
     int mask, pos, dlt;
-    struct cache_entry *ent;
-    if (cache->capa / 4 * 3 <= cache->size) {
+    cache_entry_t *ent;
+#if METHOD_CACHE_STATS
+    if (cache->size == 0) {
+	rb_meth_cache.not_empty++;
+    }
+#endif
+    if (cache->capa == MCACHE_INLINED) {
+	if (cache->size < MCACHE_INLINED) {
+	    ent = cache->en;
+	    pos = cache->size;
+	    goto found;
+	}
+	rb_mcache_resize(cache);
+    } else if (cache->capa / 4 * 3 <= cache->size) {
 	rb_mcache_resize(cache);
     }
     mask = cache->capa - 1;
@@ -61,55 +73,156 @@ found:
     ent->mid = id;
     ent->me = me;
     cache->size++;
+#if METHOD_CACHE_STATS
+    cache->insertions++;
+    cache->undefs += me == 0;
+    rb_meth_cache.sum_undefs += me == 0;
+    rb_meth_cache.sum_used++;
+    rb_meth_cache.insertions++;
+#endif
 }
 
+#define MCACHE_MIN_SIZE 8
+#define MCACHE_MIN_SHRINK 16
+#define MCACHE_SHRINK_TRIGGER 16
+#define MCACHE_SHRINK_BOUND 4
 static void
 rb_mcache_resize(struct rb_meth_cache *cache)
 {
     struct rb_meth_cache tmp;
+    cache_entry_t *entries;
     int i;
 
     MEMZERO(&tmp, struct rb_meth_cache, 1);
-    tmp.capa = cache->capa * 2;
-    tmp.entries = xcalloc(tmp.capa, sizeof(struct cache_entry));
+    tmp.method_state = cache->method_state;
+    tmp.class_serial = cache->class_serial;
+#if METHOD_CACHE_STATS
+    tmp.resets = cache->resets;
+    tmp.insertions = cache->insertions;
+    rb_meth_cache.sum_undefs -= cache->undefs;
+    if (cache->size > 0) {
+	rb_meth_cache.not_empty--;
+    }
+#endif
+    if (cache->capa == MCACHE_INLINED) {
+	tmp.capa = MCACHE_MIN_SIZE;
+	entries = cache->en;
+    }
+    else {
+	tmp.capa = cache->capa * 2;
+	entries = cache->entries;
+	rb_meth_cache.sum_capa -= cache->capa;
+    }
+redo:
+    tmp.entries = xcalloc(tmp.capa, sizeof(cache_entry_t));
     for(i = 0; i < cache->capa; i++) {
-	if (cache->entries[i].mid) {
-	    struct cache_entry *ent = &cache->entries[i];
+	if (entries[i].mid && (entries[i].me & ~1)) {
+	    cache_entry_t *ent = &entries[i];
 	    rb_mcache_insert(&tmp, ent->mid, ent->me & ~1, ent->defined_class);
 	}
     }
-    xfree(cache->entries);
+    /* deal with lots of cached method_missing */
+    if (tmp.size < tmp.capa / MCACHE_SHRINK_TRIGGER && tmp.capa > MCACHE_MIN_SHRINK) {
+	    xfree(tmp.entries);
+#if METHOD_CACHE_STATS
+	    rb_meth_cache.sum_used -= tmp.size;
+	    if (tmp.size > 0) {
+		rb_meth_cache.not_empty--;
+	    }
+#endif
+	    while(tmp.size < tmp.capa / MCACHE_SHRINK_BOUND && tmp.capa > MCACHE_MIN_SHRINK) {
+		    tmp.capa /= 2;
+	    }
+	    tmp.size = 0;
+	    goto redo;
+    }
+#if METHOD_CACHE_STATS
+    rb_meth_cache.sum_used -= cache->size;
+    rb_meth_cache.sum_capa += tmp.capa;
+    if (cache->capa == MCACHE_INLINED) {
+	rb_meth_cache.alloced++;
+	rb_meth_cache.created++;
+    }
+#endif
+    if (cache->capa > MCACHE_INLINED) {
+	xfree(cache->entries);
+    }
     *cache = tmp;
 }
 
 static inline void
 rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
 {
+#if METHOD_CACHE_STATS
+    cache->resets++;
+    rb_meth_cache.resets++;
+    rb_meth_cache.sum_used -= cache->size;
+    rb_meth_cache.sum_undefs -= cache->undefs;
+    cache->undefs = 0;
+    if (cache->size > 0) {
+	rb_meth_cache.not_empty--;
+    }
+#endif
+    if (cache->is_copy) {
+#if METHOD_CACHE_STATS
+	rb_meth_cache.copies--;
+#endif
+	cache->is_copy = 0;
+	if (cache->capa > MCACHE_INLINED && cache->entries != NULL) {
+	    xfree(cache->entries);
+	    cache->entries = NULL;
+#if METHOD_CACHE_STATS
+	    rb_meth_cache.copy_reset++;
+	    rb_meth_cache.sum_capa -= cache->capa;
+	    rb_meth_cache.alloced--;
+#endif
+	    cache->capa = 0;
+	}
+    }
     cache->method_state = GET_GLOBAL_METHOD_STATE();
     cache->class_serial = class_serial;
     cache->size = 0;
-    if (cache->entries != NULL) {
-	MEMZERO(cache->entries, struct cache_entry, cache->capa);
-    } else {
-	cache->entries = xcalloc(8, sizeof(struct cache_entry));
-	cache->capa = 8;
+    if (cache->capa == 0 || cache->capa == MCACHE_INLINED) {
+	cache->capa = MCACHE_INLINED;
+	MEMZERO(cache->en, cache_entry_t, MCACHE_INLINED);
+    }
+    else if (cache->entries != NULL) {
+	MEMZERO(cache->entries, cache_entry_t, cache->capa);
     }
 }
 
-static inline struct cache_entry*
+static inline cache_entry_t*
 rb_mcache_find(struct rb_meth_cache *cache, ID id)
 {
-    struct cache_entry *ent = cache->entries;
-    int mask = cache->capa - 1;
-    int pos = HASH(id) & mask;
-    int dlt;
-    if (ent[pos].mid == id) return ent + pos;
-    if (!COLLISION(ent[pos])) return NULL;
-    dlt = (id % mask) | 1;
-    for(;;) {
-	pos = (pos + dlt) & mask;
+    if (cache->capa == MCACHE_INLINED) {
+	if (cache->en[0].mid == id) return &cache->en[0];
+#if MCACHE_INLINED > 1
+	if (cache->en[1].mid == id) return &cache->en[1];
+#endif
+#if MCACHE_INLINED > 2
+	if (cache->en[2].mid == id) return &cache->en[2];
+#endif
+#if MCACHE_INLINED > 3
+	if (cache->en[3].mid == id) return &cache->en[3];
+#endif
+#if MCACHE_INLINED > 4
+#error "Are you serious about such huge MCACHE_INLINED?"
+#endif
+	return NULL;
+    }
+    else {
+	cache_entry_t *ent = cache->entries;
+	int mask = cache->capa - 1;
+	int pos = HASH(id) & mask;
+	int dlt;
 	if (ent[pos].mid == id) return ent + pos;
 	if (!COLLISION(ent[pos])) return NULL;
+	dlt = (id % mask) | 1;
+	for(;;) {
+	    pos = (pos + dlt) & mask;
+	    if (ent[pos].mid == id) return ent + pos;
+	    if (!COLLISION(ent[pos])) return NULL;
+	}
     }
 }
 
@@ -119,16 +232,107 @@ rb_method_cache_copy(VALUE from, VALUE to)
     struct rb_meth_cache *from_cache = &RCLASS_EXT(from)->cache, *to_cache = &RCLASS_EXT(to)->cache;
     if (!from_cache->size) return;
 
-    if (to_cache->entries)
+    if (to_cache->capa > MCACHE_INLINED && to_cache->entries) {
 	xfree(to_cache->entries);
+#if METHOD_CACHE_STATS
+	rb_meth_cache.alloced--;
+	rb_meth_cache.sum_capa -= to_cache->capa;
+	rb_meth_cache.sum_used -= to_cache->size;
+	rb_meth_cache.sum_undefs -= to_cache->undefs;
+    }
+    if (to_cache->is_copy) {
+	rb_meth_cache.copies--;
+    }
+    if (to_cache->size > 0) {
+	rb_meth_cache.not_empty--;
+    }
+    if (from_cache->size > 0) {
+	rb_meth_cache.not_empty++;
+#endif
+    }
     to_cache->capa = from_cache->capa;
-    to_cache->entries = xcalloc(to_cache->capa, sizeof(struct cache_entry));
-    if (from_cache->entries)
-	MEMCPY(to_cache->entries, from_cache->entries, struct cache_entry, from_cache->capa);
     to_cache->size = from_cache->size;
     to_cache->method_state = from_cache->method_state;
     to_cache->class_serial = RCLASS_SERIAL(to);
+    to_cache->is_copy = 1;
+    if (from_cache->capa > MCACHE_INLINED) {
+	to_cache->entries = xcalloc(to_cache->capa, sizeof(cache_entry_t));
+	MEMCPY(to_cache->entries, from_cache->entries, cache_entry_t, from_cache->capa);
+#if METHOD_CACHE_STATS
+	rb_meth_cache.alloced++;
+	rb_meth_cache.sum_capa += to_cache->capa;
+	rb_meth_cache.copy_alloced++;
+#endif
+    } else {
+	MEMCPY(to_cache->en, from_cache->en, cache_entry_t, MCACHE_INLINED);
+    }
+#if METHOD_CACHE_STATS
+    to_cache->undefs = from_cache->undefs;
+    rb_meth_cache.sum_used += to_cache->size;
+    rb_meth_cache.sum_undefs += to_cache->undefs;
+    rb_meth_cache.copies++;
+#endif
 }
+
+#if METHOD_CACHE_STATS
+VALUE
+rb_method_cache_stats(int argc, VALUE* argv, VALUE obj)
+{
+    ID used, capa, copy, alloced, resets, insertions, undefs;
+    ID created, destroyed, copy_alloced, copy_reset, not_empty;
+    VALUE res = rb_hash_new();
+    CONST_ID(used, "used");
+    CONST_ID(capa, "capa");
+    CONST_ID(copy, "copy");
+    CONST_ID(not_empty, "not_empty");
+    CONST_ID(alloced, "alloced");
+    CONST_ID(resets, "resets");
+    CONST_ID(insertions, "insertions");
+    CONST_ID(undefs, "undefs");
+    CONST_ID(created, "created");
+    CONST_ID(destroyed, "destroyed");
+    CONST_ID(copy_alloced, "copy_alloced");
+    CONST_ID(copy_reset, "copy_reset");
+
+    rb_check_arity(argc, 0, 1);
+    if (argc == 1) {
+	VALUE klass = argv[0];
+	struct rb_meth_cache *cache;
+	int type = BUILTIN_TYPE(klass);
+	if (type != T_CLASS && type != T_ICLASS) {
+	    Check_Type(klass, T_CLASS);
+	}
+	cache = &RCLASS_EXT(klass)->cache;
+	rb_hash_aset(res, ID2SYM(used), INT2FIX(cache->size));
+	rb_hash_aset(res, ID2SYM(undefs),  INT2FIX(cache->undefs));
+	if (cache->capa <= MCACHE_INLINED) {
+	    rb_hash_aset(res, ID2SYM(capa), INT2FIX(0));
+	    rb_hash_aset(res, ID2SYM(alloced),  INT2FIX(0));
+	} else {
+	    rb_hash_aset(res, ID2SYM(capa), INT2FIX(cache->capa));
+	    rb_hash_aset(res, ID2SYM(alloced),  INT2FIX(1));
+	}
+	rb_hash_aset(res, ID2SYM(not_empty), INT2FIX(cache->size > 0));
+	rb_hash_aset(res, ID2SYM(copy), INT2FIX(cache->is_copy));
+	rb_hash_aset(res, ID2SYM(resets), SIZET2NUM(cache->resets));
+	rb_hash_aset(res, ID2SYM(insertions), SIZET2NUM(cache->insertions));
+    } else if (argc == 0) {
+	rb_hash_aset(res, ID2SYM(used), SIZET2NUM(rb_meth_cache.sum_used));
+	rb_hash_aset(res, ID2SYM(undefs),  SIZET2NUM(rb_meth_cache.sum_undefs));
+	rb_hash_aset(res, ID2SYM(capa), SIZET2NUM(rb_meth_cache.sum_capa));
+	rb_hash_aset(res, ID2SYM(alloced),  SIZET2NUM(rb_meth_cache.alloced));
+	rb_hash_aset(res, ID2SYM(not_empty), SIZET2NUM(rb_meth_cache.not_empty));
+	rb_hash_aset(res, ID2SYM(copy), SIZET2NUM(rb_meth_cache.copies));
+	rb_hash_aset(res, ID2SYM(resets), SIZET2NUM(rb_meth_cache.resets));
+	rb_hash_aset(res, ID2SYM(insertions), SIZET2NUM(rb_meth_cache.insertions));
+	rb_hash_aset(res, ID2SYM(created),  SIZET2NUM(rb_meth_cache.created));
+	rb_hash_aset(res, ID2SYM(destroyed),  SIZET2NUM(rb_meth_cache.destroyed));
+	rb_hash_aset(res, ID2SYM(copy_alloced),  SIZET2NUM(rb_meth_cache.copy_alloced));
+	rb_hash_aset(res, ID2SYM(copy_reset),  SIZET2NUM(rb_meth_cache.copy_reset));
+    }
+    return res;
+}
+#endif
 
 #define ruby_running (GET_VM()->running)
 /* int ruby_running = 0; */
@@ -697,7 +901,7 @@ rb_method_entry(VALUE klass, ID id, VALUE *defined_class_ptr)
 	ext->cache.class_serial != ext->class_serial) {
 	rb_mcache_reset(&ext->cache, ext->class_serial);
     } else {
-	struct cache_entry *ent;
+	cache_entry_t *ent;
 	ent = rb_mcache_find(&ext->cache, id);
 	if (ent == NULL) goto not_found;
 	if (defined_class_ptr)

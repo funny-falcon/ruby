@@ -261,11 +261,51 @@ typedef unsigned long rb_serial_t;
 #define SERIALT2NUM ULONG2NUM
 #endif
 
+#if !defined(METHOD_CACHE_STATS)
+#define METHOD_CACHE_STATS 0
+#endif
+
+#if METHOD_CACHE_STATS
+struct rb_meth_cache_stats {
+	size_t sum_capa;
+	size_t sum_used;
+	size_t sum_undefs;
+	size_t alloced;
+	size_t not_empty;
+	size_t copies;
+	size_t resets;
+	size_t insertions;
+	size_t created;
+	size_t destroyed;
+	size_t copy_alloced;
+	size_t copy_reset;
+};
+extern struct rb_meth_cache_stats rb_meth_cache;
+VALUE rb_method_cache_stats(int argc, VALUE* argv, VALUE obj);
+#endif
+
+struct rb_meth_cache_entry {
+    ID mid;
+    uintptr_t me;
+    VALUE defined_class;
+};
+
+/* valid values for MCACHE_INLINED are 1, 2, 3 and 4 */
+#define MCACHE_INLINED 3
 struct rb_meth_cache {
     rb_serial_t method_state;
     rb_serial_t class_serial;
-    struct cache_entry *entries;
     int size, capa;
+    int is_copy;
+#if METHOD_CACHE_STATS
+    int undefs;
+    size_t resets;
+    size_t insertions;
+#endif
+    union {
+	struct rb_meth_cache_entry *entries;
+	struct rb_meth_cache_entry en[MCACHE_INLINED];
+    };
 };
 
 struct rb_classext_struct {
@@ -291,10 +331,28 @@ static inline void
 rb_method_cache_clear(VALUE klass)
 {
     struct rb_classext_struct *ext = RCLASS(klass)->ptr;
-    if (ext->cache.entries) {
+    if (ext->cache.capa > MCACHE_INLINED && ext->cache.entries) {
 	xfree(ext->cache.entries);
 	ext->cache.entries = NULL;
+#if METHOD_CACHE_STATS
+	rb_meth_cache.alloced--;
+	rb_meth_cache.sum_capa -= ext->cache.capa;
+	rb_meth_cache.destroyed++;
+#endif
+	ext->cache.capa = 0;
     }
+#if METHOD_CACHE_STATS
+    if (ext->cache.is_copy) {
+	ext->cache.is_copy = 0;
+	rb_meth_cache.copies--;
+    }
+    if (ext->cache.size > 0) {
+	rb_meth_cache.not_empty--;
+	rb_meth_cache.sum_used -= ext->cache.size;
+	rb_meth_cache.sum_undefs -= ext->cache.undefs;
+	ext->cache.size = 0;
+    }
+#endif
 }
 
 struct method_table_wrapper {
