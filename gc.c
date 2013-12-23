@@ -1786,6 +1786,9 @@ rb_objspace_each_objects(each_obj_callback *callback, void *data)
 struct os_each_struct {
     size_t num;
     VALUE of;
+#if METHOD_CACHE_STATS
+    int with_hidden_klasses;
+#endif
 };
 
 static int
@@ -1811,6 +1814,25 @@ internal_object_p(VALUE obj)
     return 1;
 }
 
+#if METHOD_CACHE_STATS
+static int
+hidden_class_p(VALUE obj)
+{
+    RVALUE *p = (RVALUE *)obj;
+
+    if (p->as.basic.flags) {
+	switch (BUILTIN_TYPE(p)) {
+	  case T_ICLASS:
+	    return 1;
+	  case T_CLASS:
+	    if (FL_TEST(p, FL_SINGLETON))
+	      return 1;
+	}
+    }
+    return 0;
+}
+#endif
+
 int
 rb_objspace_internal_object_p(VALUE obj)
 {
@@ -1825,7 +1847,11 @@ os_obj_of_i(void *vstart, void *vend, size_t stride, void *data)
 
     for (; p != pend; p++) {
 	volatile VALUE v = (VALUE)p;
+#if METHOD_CACHE_STATS
+	if (!internal_object_p(v) || (oes->with_hidden_klasses && hidden_class_p(v))) {
+#else
 	if (!internal_object_p(v)) {
+#endif
 	    if (!oes->of || rb_obj_is_kind_of(v, oes->of)) {
 		rb_yield(v);
 		oes->num++;
@@ -1837,12 +1863,19 @@ os_obj_of_i(void *vstart, void *vend, size_t stride, void *data)
 }
 
 static VALUE
+#if METHOD_CACHE_STATS
+os_obj_of(VALUE of, VALUE whk)
+#else
 os_obj_of(VALUE of)
+#endif
 {
     struct os_each_struct oes;
 
     oes.num = 0;
     oes.of = of;
+#if METHOD_CACHE_STATS
+    oes.with_hidden_klasses = RTEST(whk);
+#endif
     rb_objspace_each_objects(os_obj_of_i, &oes);
     return SIZET2NUM(oes.num);
 }
@@ -1883,6 +1916,23 @@ os_obj_of(VALUE of)
  *
  */
 
+#if METHOD_CACHE_STATS
+static VALUE
+os_each_obj(int argc, VALUE *argv, VALUE os)
+{
+    VALUE args[2];
+
+    if (argc == 0) {
+	args[0] = 0;
+	args[1] = Qnil;
+    }
+    else {
+	rb_scan_args(argc, argv, "02", &args[0], &args[1]);
+    }
+    RETURN_ENUMERATOR(os, 2, args);
+    return os_obj_of(args[0], args[1]);
+}
+#else
 static VALUE
 os_each_obj(int argc, VALUE *argv, VALUE os)
 {
@@ -1897,6 +1947,7 @@ os_each_obj(int argc, VALUE *argv, VALUE os)
     RETURN_ENUMERATOR(os, 1, &of);
     return os_obj_of(of);
 }
+#endif
 
 /*
  *  call-seq:

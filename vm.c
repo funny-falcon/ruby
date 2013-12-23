@@ -2390,6 +2390,9 @@ Init_VM(void)
     rb_undef_alloc_func(rb_cRubyVM);
     rb_undef_method(CLASS_OF(rb_cRubyVM), "new");
     rb_define_singleton_method(rb_cRubyVM, "stat", vm_stat, -1);
+#if METHOD_CACHE_STATS
+    rb_define_singleton_method(rb_cRubyVM, "method_cache_stats", rb_method_cache_stats, -1);
+#endif
 
     /* FrozenCore (hidden) */
     fcore = rb_class_new(rb_cBasicObject);
