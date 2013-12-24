@@ -63,6 +63,10 @@ found:
     cache->size++;
 }
 
+#define MCACHE_MIN_SIZE 8
+#define MCACHE_MIN_SHRINK 16
+#define MCACHE_SHRINK_TRIGGER 16
+#define MCACHE_SHRINK_BOUND 4
 static void
 rb_mcache_resize(struct rb_meth_cache *cache)
 {
@@ -82,9 +86,9 @@ redo:
 	}
     }
     /* deal with lots of cached method_missing */
-    if (tmp.size < tmp.capa / 8 && tmp.capa > 8) {
+    if (tmp.size < tmp.capa / MCACHE_SHRINK_TRIGGER && tmp.capa > MCACHE_MIN_SHRINK) {
 	    xfree(tmp.entries);
-	    while(tmp.capa > tmp.size * 2 && tmp.capa > 8) {
+	    while(tmp.size < tmp.capa / MCACHE_SHRINK_BOUND && tmp.capa > MCACHE_MIN_SHRINK) {
 		    tmp.capa /= 2;
 	    }
 	    tmp.size = 0;
@@ -103,8 +107,8 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
     if (cache->entries != NULL) {
 	MEMZERO(cache->entries, struct cache_entry, cache->capa);
     } else {
-	cache->entries = xcalloc(8, sizeof(struct cache_entry));
-	cache->capa = 8;
+	cache->entries = xcalloc(MCACHE_MIN_SIZE, sizeof(struct cache_entry));
+	cache->capa = MCACHE_MIN_SIZE;
     }
 }
 
