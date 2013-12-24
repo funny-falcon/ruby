@@ -261,11 +261,35 @@ typedef unsigned long rb_serial_t;
 #define SERIALT2NUM ULONG2NUM
 #endif
 
+#if !defined(METHOD_CACHE_STATS)
+#define METHOD_CACHE_STATS 0
+#endif
+
+#if METHOD_CACHE_STATS
+struct rb_meth_cache_stats {
+	size_t sum_capa;
+	size_t sum_used;
+	size_t sum_undefs;
+	size_t instances;
+	size_t copies;
+	size_t resets;
+	size_t insertions;
+};
+extern struct rb_meth_cache_stats rb_meth_cache;
+VALUE rb_method_cache_stats(int argc, VALUE* argv, VALUE obj);
+#endif
+
 struct rb_meth_cache {
     rb_serial_t method_state;
     rb_serial_t class_serial;
     struct cache_entry *entries;
     int size, capa;
+#if METHOD_CACHE_STATS
+    int is_copy;
+    int undefs;
+    size_t resets;
+    size_t insertions;
+#endif
 };
 
 struct rb_classext_struct {
@@ -294,6 +318,15 @@ rb_method_cache_clear(VALUE klass)
     if (ext->cache.entries) {
 	xfree(ext->cache.entries);
 	ext->cache.entries = NULL;
+#if METHOD_CACHE_STATS
+	rb_meth_cache.instances--;
+	rb_meth_cache.sum_capa -= ext->cache.capa;
+	rb_meth_cache.sum_used -= ext->cache.size;
+	rb_meth_cache.sum_undefs -= ext->cache.undefs;
+	if (ext->cache.is_copy) {
+		rb_meth_cache.copies--;
+	}
+#endif
     }
 }
 
