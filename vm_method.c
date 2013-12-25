@@ -134,6 +134,7 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
     if (cache->is_copy) {
 #if METHOD_CACHE_STATS
 	rb_meth_cache.copies--;
+	rb_meth_cache.copy_reset++;
 #endif
 	cache->is_copy = 0;
 	if (cache->entries != NULL && cache->capa > MCACHE_MIN_SIZE) {
@@ -156,6 +157,7 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
 #if METHOD_CACHE_STATS
 	rb_meth_cache.sum_capa += cache->capa;
 	rb_meth_cache.instances++;
+	rb_meth_cache.created++;
 #endif
     }
 }
@@ -210,6 +212,7 @@ rb_method_cache_copy(VALUE from, VALUE to)
     rb_meth_cache.sum_used += to_cache->size;
     rb_meth_cache.sum_undefs += to_cache->undefs;
     rb_meth_cache.copies++;
+    rb_meth_cache.copy_created++;
 #endif
 }
 
@@ -218,6 +221,7 @@ VALUE
 rb_method_cache_stats(int argc, VALUE* argv, VALUE obj)
 {
     ID used, capa, copy, cnt, resets, insertions, undefs;
+    ID created, destroyed, copy_created, copy_reset;
     VALUE res = rb_hash_new();
     CONST_ID(used, "used");
     CONST_ID(capa, "capa");
@@ -226,6 +230,10 @@ rb_method_cache_stats(int argc, VALUE* argv, VALUE obj)
     CONST_ID(resets, "resets");
     CONST_ID(insertions, "insertions");
     CONST_ID(undefs, "undefs");
+    CONST_ID(created, "created");
+    CONST_ID(destroyed, "destroyed");
+    CONST_ID(copy_created, "copy_created");
+    CONST_ID(copy_reset, "copy_reset");
 
     rb_check_arity(argc, 0, 1);
     if (argc == 1) {
@@ -269,6 +277,10 @@ rb_method_cache_stats(int argc, VALUE* argv, VALUE obj)
 	rb_hash_aset(res, ID2SYM(resets), SIZET2NUM(rb_meth_cache.resets));
 	rb_hash_aset(res, ID2SYM(insertions), SIZET2NUM(rb_meth_cache.insertions));
 	rb_hash_aset(res, ID2SYM(cnt),  SIZET2NUM(rb_meth_cache.instances));
+	rb_hash_aset(res, ID2SYM(created),  SIZET2NUM(rb_meth_cache.created));
+	rb_hash_aset(res, ID2SYM(destroyed),  SIZET2NUM(rb_meth_cache.destroyed));
+	rb_hash_aset(res, ID2SYM(copy_created),  SIZET2NUM(rb_meth_cache.copy_created));
+	rb_hash_aset(res, ID2SYM(copy_reset),  SIZET2NUM(rb_meth_cache.copy_reset));
     }
     return res;
 }

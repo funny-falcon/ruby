@@ -274,6 +274,10 @@ struct rb_meth_cache_stats {
 	size_t copies;
 	size_t resets;
 	size_t insertions;
+	size_t created;
+	size_t destroyed;
+	size_t copy_created;
+	size_t copy_reset;
 };
 extern struct rb_meth_cache_stats rb_meth_cache;
 VALUE rb_method_cache_stats(int argc, VALUE* argv, VALUE obj);
@@ -326,6 +330,7 @@ rb_method_cache_clear(VALUE klass)
 	if (ext->cache.is_copy) {
 		rb_meth_cache.copies--;
 	}
+	rb_meth_cache.destroyed++;
 #endif
     }
 }
