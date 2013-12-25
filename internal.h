@@ -284,8 +284,8 @@ struct rb_meth_cache {
     rb_serial_t class_serial;
     struct cache_entry *entries;
     int size, capa;
-#if METHOD_CACHE_STATS
     int is_copy;
+#if METHOD_CACHE_STATS
     int undefs;
     size_t resets;
     size_t insertions;

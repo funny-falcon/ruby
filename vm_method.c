@@ -129,18 +129,22 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
     rb_meth_cache.resets++;
     rb_meth_cache.sum_used -= cache->size;
     rb_meth_cache.sum_undefs -= cache->undefs;
+    cache->undefs = 0;
+#endif
     if (cache->is_copy) {
+#if METHOD_CACHE_STATS
 	rb_meth_cache.copies--;
+#endif
 	cache->is_copy = 0;
 	if (cache->entries != NULL && cache->capa > MCACHE_MIN_SIZE) {
 	    xfree(cache->entries);
 	    cache->entries = NULL;
-	    rb_meth_cache.sum_capa -= cache->capa;
 	    cache->capa = 0;
+#if METHOD_CACHE_STATS
+	    rb_meth_cache.sum_capa -= cache->capa;
+#endif
 	}
     }
-    cache->undefs = 0;
-#endif
     cache->method_state = GET_GLOBAL_METHOD_STATE();
     cache->class_serial = class_serial;
     cache->size = 0;
@@ -198,9 +202,9 @@ rb_method_cache_copy(VALUE from, VALUE to)
     to_cache->size = from_cache->size;
     to_cache->method_state = from_cache->method_state;
     to_cache->class_serial = RCLASS_SERIAL(to);
+    to_cache->is_copy = 1;
 #if METHOD_CACHE_STATS
     to_cache->undefs = from_cache->undefs;
-    to_cache->is_copy = 1;
     rb_meth_cache.instances++;
     rb_meth_cache.sum_capa += to_cache->capa;
     rb_meth_cache.sum_used += to_cache->size;
