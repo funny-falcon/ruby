@@ -143,6 +143,8 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
 	    cache->capa = 0;
 #if METHOD_CACHE_STATS
 	    rb_meth_cache.sum_capa -= cache->capa;
+	    rb_meth_cache.instances--;
+	    rb_meth_cache.created--;
 #endif
 	}
     }
