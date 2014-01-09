@@ -291,7 +291,12 @@ struct rb_meth_cache_entry {
 };
 
 /* valid values for MCACHE_INLINED are 1, 2, 3 and 4 */
+#ifndef MCACHE_INLINED
 #define MCACHE_INLINED 3
+#endif
+#ifndef MCACHE_RESET_FREES_COPY
+#define MCACHE_RESET_FREES_COPY 1
+#endif
 struct rb_meth_cache {
     rb_serial_t method_state;
     rb_serial_t class_serial;

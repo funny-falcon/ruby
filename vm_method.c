@@ -168,6 +168,7 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
 	rb_meth_cache.copies--;
 #endif
 	cache->is_copy = 0;
+#if MCACHE_RESET_FREES_COPY
 	if (cache->capa > MCACHE_INLINED && cache->entries != NULL) {
 	    xfree(cache->entries);
 	    cache->entries = NULL;
@@ -178,6 +179,7 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
 #endif
 	    cache->capa = 0;
 	}
+#endif
     }
     cache->method_state = GET_GLOBAL_METHOD_STATE();
     cache->class_serial = class_serial;
