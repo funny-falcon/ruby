@@ -111,7 +111,9 @@ rb_mcache_resize(struct rb_meth_cache *cache)
     else {
 	tmp.capa = cache->capa * 2;
 	entries = cache->entries;
+#if METHOD_CACHE_STATS
 	rb_meth_cache.sum_capa -= cache->capa;
+#endif
     }
 redo:
     tmp.entries = xcalloc(tmp.capa, sizeof(cache_entry_t));
