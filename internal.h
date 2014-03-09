@@ -303,9 +303,9 @@ struct rb_meth_cache {
     size_t insertions;
 #endif
     union {
-	struct rb_meth_cache_entry *entries;
-	struct rb_meth_cache_entry en[MCACHE_INLINED];
-    };
+	struct rb_meth_cache_entry *ntries;
+	struct rb_meth_cache_entry n[MCACHE_INLINED];
+    } e;
 };
 
 struct rb_classext_struct {
@@ -331,9 +331,9 @@ static inline void
 rb_method_cache_clear(VALUE klass)
 {
     struct rb_classext_struct *ext = RCLASS(klass)->ptr;
-    if (ext->cache.capa > MCACHE_INLINED && ext->cache.entries) {
-	xfree(ext->cache.entries);
-	ext->cache.entries = NULL;
+    if (ext->cache.capa > MCACHE_INLINED && ext->cache.e.ntries) {
+	xfree(ext->cache.e.ntries);
+	ext->cache.e.ntries = NULL;
 #if METHOD_CACHE_STATS
 	rb_meth_cache.alloced--;
 	rb_meth_cache.sum_capa -= ext->cache.capa;
