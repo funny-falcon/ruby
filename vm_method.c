@@ -43,7 +43,7 @@ rb_mcache_insert(struct rb_meth_cache *cache, ID id, uintptr_t me, VALUE defined
 #endif
     if (cache->capa == MCACHE_INLINED) {
 	if (cache->size < MCACHE_INLINED) {
-	    ent = cache->en;
+	    ent = cache->e.n;
 	    pos = cache->size;
 	    goto found;
 	}
@@ -54,7 +54,7 @@ rb_mcache_insert(struct rb_meth_cache *cache, ID id, uintptr_t me, VALUE defined
     mask = cache->capa - 1;
     pos = HASH(id) & mask;
 
-    ent = cache->entries;
+    ent = cache->e.ntries;
     if (ent[pos].mid == 0) {
 	goto found;
     }
@@ -106,17 +106,17 @@ rb_mcache_resize(struct rb_meth_cache *cache)
 #endif
     if (cache->capa == MCACHE_INLINED) {
 	tmp.capa = MCACHE_MIN_SIZE;
-	entries = cache->en;
+	entries = cache->e.n;
     }
     else {
 	tmp.capa = cache->capa * 2;
-	entries = cache->entries;
+	entries = cache->e.ntries;
 #if METHOD_CACHE_STATS
 	rb_meth_cache.sum_capa -= cache->capa;
 #endif
     }
 redo:
-    tmp.entries = xcalloc(tmp.capa, sizeof(cache_entry_t));
+    tmp.e.ntries = xcalloc(tmp.capa, sizeof(cache_entry_t));
     for(i = 0; i < cache->capa; i++) {
 	if (entries[i].mid && (entries[i].me & ~1)) {
 	    cache_entry_t *ent = &entries[i];
@@ -125,7 +125,7 @@ redo:
     }
     /* deal with lots of cached method_missing */
     if (tmp.size < tmp.capa / MCACHE_SHRINK_TRIGGER && tmp.capa > MCACHE_MIN_SHRINK) {
-	    xfree(tmp.entries);
+	    xfree(tmp.e.ntries);
 #if METHOD_CACHE_STATS
 	    rb_meth_cache.sum_used -= tmp.size;
 	    if (tmp.size > 0) {
@@ -147,7 +147,7 @@ redo:
     }
 #endif
     if (cache->capa > MCACHE_INLINED) {
-	xfree(cache->entries);
+	xfree(cache->e.ntries);
     }
     *cache = tmp;
 }
@@ -170,9 +170,9 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
 	rb_meth_cache.copies--;
 #endif
 	cache->is_copy = 0;
-	if (cache->capa > MCACHE_INLINED && cache->entries != NULL) {
-	    xfree(cache->entries);
-	    cache->entries = NULL;
+	if (cache->capa > MCACHE_INLINED && cache->e.ntries != NULL) {
+	    xfree(cache->e.ntries);
+	    cache->e.ntries = NULL;
 #if METHOD_CACHE_STATS
 	    rb_meth_cache.copy_reset++;
 	    rb_meth_cache.sum_capa -= cache->capa;
@@ -186,10 +186,10 @@ rb_mcache_reset(struct rb_meth_cache *cache, rb_serial_t class_serial)
     cache->size = 0;
     if (cache->capa == 0 || cache->capa == MCACHE_INLINED) {
 	cache->capa = MCACHE_INLINED;
-	MEMZERO(cache->en, cache_entry_t, MCACHE_INLINED);
+	MEMZERO(cache->e.n, cache_entry_t, MCACHE_INLINED);
     }
-    else if (cache->entries != NULL) {
-	MEMZERO(cache->entries, cache_entry_t, cache->capa);
+    else if (cache->e.ntries != NULL) {
+	MEMZERO(cache->e.ntries, cache_entry_t, cache->capa);
     }
 }
 
@@ -197,15 +197,15 @@ static inline cache_entry_t*
 rb_mcache_find(struct rb_meth_cache *cache, ID id)
 {
     if (cache->capa == MCACHE_INLINED) {
-	if (cache->en[0].mid == id) return &cache->en[0];
+	if (cache->e.n[0].mid == id) return &cache->e.n[0];
 #if MCACHE_INLINED > 1
-	if (cache->en[1].mid == id) return &cache->en[1];
+	if (cache->e.n[1].mid == id) return &cache->e.n[1];
 #endif
 #if MCACHE_INLINED > 2
-	if (cache->en[2].mid == id) return &cache->en[2];
+	if (cache->e.n[2].mid == id) return &cache->e.n[2];
 #endif
 #if MCACHE_INLINED > 3
-	if (cache->en[3].mid == id) return &cache->en[3];
+	if (cache->e.n[3].mid == id) return &cache->e.n[3];
 #endif
 #if MCACHE_INLINED > 4
 #error "Are you serious about such huge MCACHE_INLINED?"
@@ -213,7 +213,7 @@ rb_mcache_find(struct rb_meth_cache *cache, ID id)
 	return NULL;
     }
     else {
-	cache_entry_t *ent = cache->entries;
+	cache_entry_t *ent = cache->e.ntries;
 	int mask = cache->capa - 1;
 	int pos = HASH(id) & mask;
 	int dlt;
@@ -234,8 +234,8 @@ rb_method_cache_copy(VALUE from, VALUE to)
     struct rb_meth_cache *from_cache = &RCLASS_EXT(from)->cache, *to_cache = &RCLASS_EXT(to)->cache;
     if (!from_cache->size) return;
 
-    if (to_cache->capa > MCACHE_INLINED && to_cache->entries) {
-	xfree(to_cache->entries);
+    if (to_cache->capa > MCACHE_INLINED && to_cache->e.ntries) {
+	xfree(to_cache->e.ntries);
 #if METHOD_CACHE_STATS
 	rb_meth_cache.alloced--;
 	rb_meth_cache.sum_capa -= to_cache->capa;
@@ -258,15 +258,15 @@ rb_method_cache_copy(VALUE from, VALUE to)
     to_cache->class_serial = RCLASS_SERIAL(to);
     to_cache->is_copy = 1;
     if (from_cache->capa > MCACHE_INLINED) {
-	to_cache->entries = xcalloc(to_cache->capa, sizeof(cache_entry_t));
-	MEMCPY(to_cache->entries, from_cache->entries, cache_entry_t, from_cache->capa);
+	to_cache->e.ntries = xcalloc(to_cache->capa, sizeof(cache_entry_t));
+	MEMCPY(to_cache->e.ntries, from_cache->e.ntries, cache_entry_t, from_cache->capa);
 #if METHOD_CACHE_STATS
 	rb_meth_cache.alloced++;
 	rb_meth_cache.sum_capa += to_cache->capa;
 	rb_meth_cache.copy_alloced++;
 #endif
     } else {
-	MEMCPY(to_cache->en, from_cache->en, cache_entry_t, MCACHE_INLINED);
+	MEMCPY(to_cache->e.n, from_cache->e.n, cache_entry_t, MCACHE_INLINED);
     }
 #if METHOD_CACHE_STATS
     to_cache->undefs = from_cache->undefs;
