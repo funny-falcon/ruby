@@ -1019,8 +1019,8 @@ rb_hash_proc(st_index_t hash, VALUE prc)
 {
     rb_proc_t *proc;
     GetProcPtr(prc, proc);
-    hash = rb_hash_uint(hash, (st_index_t)proc->block.iseq);
-    return rb_hash_uint(hash, (st_index_t)proc->block.ep >> 16);
+    hash = rb_hash_uint(hash, (st_data_t)proc->block.iseq);
+    return rb_hash_uint(hash, (st_data_t)proc->block.ep >> 16);
 }
 
 /*

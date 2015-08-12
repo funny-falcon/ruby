@@ -24,6 +24,7 @@ typedef unsigned LONG_LONG st_data_t;
 # error ---->> st.c requires sizeof(void*) == sizeof(long) or sizeof(LONG_LONG) to be compiled. <<----
 #endif
 #define ST_DATA_T_DEFINED
+#define SIZEOF_ST_DATA_T SIZEOF_VOIDP
 
 #ifndef CHAR_BIT
 # ifdef HAVE_LIMITS_H
@@ -45,12 +46,12 @@ typedef unsigned LONG_LONG st_data_t;
 
 typedef struct st_table st_table;
 
-typedef st_data_t st_index_t;
+typedef uint32_t st_index_t;
 typedef int st_compare_func(st_data_t, st_data_t);
 typedef st_index_t st_hash_func(st_data_t);
 
-typedef char st_check_for_sizeof_st_index_t[SIZEOF_VOIDP == (int)sizeof(st_index_t) ? 1 : -1];
-#define SIZEOF_ST_INDEX_T SIZEOF_VOIDP
+//typedef char st_check_for_sizeof_st_index_t[SIZEOF_VOIDP == (int)sizeof(st_index_t) ? 1 : -1];
+#define SIZEOF_ST_INDEX_T SIZEOF_UINT32_T
 
 struct st_hash_type {
     int (*compare)(ANYARGS /*st_data_t, st_data_t*/); /* st_compare_func* */
@@ -69,30 +70,13 @@ struct st_hash_type {
 struct st_table {
     const struct st_hash_type *type;
     st_index_t num_bins;
-    unsigned int entries_packed : 1;
-#ifdef __GNUC__
-    /*
-     * C spec says,
-     *   A bit-field shall have a type that is a qualified or unqualified
-     *   version of _Bool, signed int, unsigned int, or some other
-     *   implementation-defined type. It is implementation-defined whether
-     *   atomic types are permitted.
-     * In short, long and long long bit-field are implementation-defined
-     * feature. Therefore we want to suppress a warning explicitly.
-     */
-    __extension__
-#endif
-    st_index_t num_entries : ST_INDEX_BITS - 1;
-    union {
-	struct {
-	    struct st_table_entry **bins;
-	    void *private_list_head[2];
-	} big;
-	struct {
-	    struct st_packed_entry *entries;
-	    st_index_t real_entries;
-	} packed;
-    } as;
+    st_index_t num_entries;
+    st_index_t first;
+    st_index_t last;
+    st_index_t free;
+    st_index_t dumb_bin; // used for small tables
+    struct st_table_entry *entries;
+    st_index_t *bins;
 };
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)

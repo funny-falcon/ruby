@@ -181,7 +181,7 @@ long
 rb_objid_hash(st_index_t index)
 {
     st_index_t hnum = rb_hash_start(index);
-    hnum = rb_hash_uint(hnum, (st_index_t)rb_any_hash);
+    hnum = rb_hash_uint(hnum, (st_data_t)rb_any_hash);
     hnum = rb_hash_end(hnum);
     return hnum;
 }
@@ -2175,7 +2175,7 @@ rb_hash_hash(VALUE hash)
 {
     st_index_t size = RHASH_SIZE(hash);
     st_index_t hval = rb_hash_start(size);
-    hval = rb_hash_uint(hval, (st_index_t)rb_hash_hash);
+    hval = rb_hash_uint(hval, (st_data_t)rb_hash_hash);
     if (size) {
 	rb_hash_foreach(hash, hash_i, (VALUE)&hval);
     }
