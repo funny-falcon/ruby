@@ -2,6 +2,7 @@
 require 'test/unit'
 require '-test-/st/foreach'
 
+if false # cause there is no packed representation, test should be rethinked
 class Test_StForeachUnpack < Test::Unit::TestCase
   def test_st_foreach_check_unpack
     assert_nil Bug.unp_st_foreach_check(:check), "goto unpacked_continue"
@@ -13,4 +14,5 @@ class Test_StForeachUnpack < Test::Unit::TestCase
     assert_nil Bug.unp_st_foreach(:unpacked), "goto unpacked"
     assert_nil Bug.unp_st_foreach(:unpack_delete), "if (!ptr) return 0"
   end
+end
 end

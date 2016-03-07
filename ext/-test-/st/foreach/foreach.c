@@ -1,6 +1,8 @@
 #include <ruby.h>
 #include <ruby/st.h>
 
+/* Since there is no packed representation, test should be rethinked */
+#if 0
 static st_data_t expect_size = 32;
 struct checker {
     st_table *tbl;
@@ -173,3 +175,4 @@ Init_foreach(void)
     rb_define_singleton_method(bug, "unp_st_foreach_check", unp_fec, 1);
     rb_define_singleton_method(bug, "unp_st_foreach", unp_fe, 1);
 }
+#endif
