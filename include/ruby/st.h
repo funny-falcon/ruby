@@ -74,16 +74,22 @@ struct st_hash_type {
 # define ST_DATA_COMPATIBLE_P(type) 0
 #endif
 
+struct st_list_entry {
+    st_idx_t prev, next;
+};
+
 struct st_table {
     const struct st_hash_type *type;
     union {
 	    struct st_table_entry* entries;
 	    st_idx_t* bins;
     } as;
+    struct st_list_entry *list;
     st_idx_t num_entries;
     int sz;
-    st_idx_t first;
+    int rebuild_num;
     st_idx_t free;
+    st_idx_t first, last;
 };
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)
