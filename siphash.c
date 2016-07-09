@@ -394,37 +394,10 @@ do {					\
     XOR64_TO((v0), (m));		\
 } while (0)
 
-uint64_t
-sip_hash24(const uint8_t key[16], const uint8_t *data, size_t len)
+static inline uint64_t
+sip_read_last(const uint8_t *end, size_t len)
 {
-    uint64_t k0, k1;
-    uint64_t v0, v1, v2, v3;
-    uint64_t m, last;
-    const uint8_t *end = data + len - (len % sizeof(uint64_t));
-
-    k0 = U8TO64_LE(key);
-    k1 = U8TO64_LE(key + sizeof(uint64_t));
-
-    v0 = k0; XOR64_TO(v0, sip_init_state[0]);
-    v1 = k1; XOR64_TO(v1, sip_init_state[1]);
-    v2 = k0; XOR64_TO(v2, sip_init_state[2]);
-    v3 = k1; XOR64_TO(v3, sip_init_state[3]);
-
-#if BYTE_ORDER == LITTLE_ENDIAN && UNALIGNED_WORD_ACCESS
-    {
-        uint64_t *data64 = (uint64_t *)data;
-        while (data64 != (uint64_t *) end) {
-	    m = *data64++;
-	    SIP_2_ROUND(m, v0, v1, v2, v3);
-        }
-    }
-#else
-    for (; data != end; data += sizeof(uint64_t)) {
-	m = U8TO64_LE(data);
-	SIP_2_ROUND(m, v0, v1, v2, v3);
-    }
-#endif
-
+    uint64_t last;
 #ifdef HAVE_UINT64_T
     last = (uint64_t)len << 56;
 #define OR_BYTE(n) (last |= ((uint64_t) end[n]) << ((n) * 8))
@@ -467,12 +440,99 @@ sip_hash24(const uint8_t key[16], const uint8_t *data, size_t len)
 	case 0:
 	    break;
     }
+    return last;
+}
 
+uint64_t
+sip_hash24(const uint8_t key[16], const uint8_t *data, size_t len)
+{
+    uint64_t k0, k1;
+    uint64_t v0, v1, v2, v3;
+    uint64_t m, last;
+    const uint8_t *end = data + len - (len % sizeof(uint64_t));
+
+    k0 = U8TO64_LE(key);
+    k1 = U8TO64_LE(key + sizeof(uint64_t));
+
+    v0 = k0; XOR64_TO(v0, sip_init_state[0]);
+    v1 = k1; XOR64_TO(v1, sip_init_state[1]);
+    v2 = k0; XOR64_TO(v2, sip_init_state[2]);
+    v3 = k1; XOR64_TO(v3, sip_init_state[3]);
+
+#if BYTE_ORDER == LITTLE_ENDIAN && UNALIGNED_WORD_ACCESS
+    {
+        uint64_t *data64 = (uint64_t *)data;
+        while (data64 != (uint64_t *) end) {
+	    m = *data64++;
+	    SIP_2_ROUND(m, v0, v1, v2, v3);
+        }
+    }
+#else
+    for (; data != end; data += sizeof(uint64_t)) {
+	m = U8TO64_LE(data);
+	SIP_2_ROUND(m, v0, v1, v2, v3);
+    }
+#endif
+
+    last = sip_read_last(end, len);
     SIP_2_ROUND(last, v0, v1, v2, v3);
 
     XOR64_INT(v2, 0xff);
 
     SIP_COMPRESS(v0, v1, v2, v3);
+    SIP_COMPRESS(v0, v1, v2, v3);
+    SIP_COMPRESS(v0, v1, v2, v3);
+    SIP_COMPRESS(v0, v1, v2, v3);
+
+    XOR64_TO(v0, v1);
+    XOR64_TO(v0, v2);
+    XOR64_TO(v0, v3);
+    return v0;
+}
+
+#define SIP_1_ROUND(m, v0, v1, v2, v3)	\
+do {					\
+    XOR64_TO((v3), (m));		\
+    SIP_COMPRESS(v0, v1, v2, v3);	\
+    XOR64_TO((v0), (m));		\
+} while (0)
+
+uint64_t
+sip_hash13(const uint8_t key[16], const uint8_t *data, size_t len)
+{
+    uint64_t k0, k1;
+    uint64_t v0, v1, v2, v3;
+    uint64_t m, last;
+    const uint8_t *end = data + len - (len % sizeof(uint64_t));
+
+    k0 = U8TO64_LE(key);
+    k1 = U8TO64_LE(key + sizeof(uint64_t));
+
+    v0 = k0; XOR64_TO(v0, sip_init_state[0]);
+    v1 = k1; XOR64_TO(v1, sip_init_state[1]);
+    v2 = k0; XOR64_TO(v2, sip_init_state[2]);
+    v3 = k1; XOR64_TO(v3, sip_init_state[3]);
+
+#if BYTE_ORDER == LITTLE_ENDIAN && UNALIGNED_WORD_ACCESS
+    {
+        uint64_t *data64 = (uint64_t *)data;
+        while (data64 != (uint64_t *) end) {
+	    m = *data64++;
+	    SIP_1_ROUND(m, v0, v1, v2, v3);
+        }
+    }
+#else
+    for (; data != end; data += sizeof(uint64_t)) {
+	m = U8TO64_LE(data);
+	SIP_1_ROUND(m, v0, v1, v2, v3);
+    }
+#endif
+
+    last = sip_read_last(end, len);
+    SIP_1_ROUND(last, v0, v1, v2, v3);
+
+    XOR64_INT(v2, 0xff);
+
     SIP_COMPRESS(v0, v1, v2, v3);
     SIP_COMPRESS(v0, v1, v2, v3);
     SIP_COMPRESS(v0, v1, v2, v3);
