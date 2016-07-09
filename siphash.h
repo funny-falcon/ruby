@@ -44,5 +44,6 @@ void sip_hash_free(sip_hash *h);
 void sip_hash_dump(sip_hash *h);
 
 uint64_t sip_hash24(const uint8_t key[16], const uint8_t *data, size_t len);
+uint64_t sip_hash13(const uint8_t key[16], const uint8_t *data, size_t len);
 
 #endif
