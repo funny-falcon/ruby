@@ -542,3 +542,92 @@ sip_hash13(const uint8_t key[16], const uint8_t *data, size_t len)
     XOR64_TO(v0, v3);
     return v0;
 }
+
+/* 32bit siphash cousine.
+ * rotation values are taken from Chaskey (other 32bit siphash offspring).
+ * see Jean-Philipee Aumasson answeres to Ocaml pull request:
+ * https://github.com/ocaml/ocaml/pull/24#issuecomment-155703243
+ * https://github.com/ocaml/ocaml/pull/24#issuecomment-156074886
+ */
+#define ROTL32(v, s)			\
+    ((v) << (s)) | ((v) >> (32 - (s)))
+
+#define SIP32_COMPRESS(v0, v1, v2, v3)	\
+do {					\
+    v0 += v1;				\
+    v2 += v3;				\
+    v1 = ROTL32(v1, 5) ^ v0;		\
+    v3 = ROTL32(v3, 8) ^ v2;		\
+    v0 = ROTL32(v0, 16);		\
+    v2 += v1;				\
+    v0 += v3;				\
+    v1 = ROTL32(v1, 7) ^ v0;		\
+    v3 = ROTL32(v3, 13) ^ v2;		\
+    v2 = ROTL32(v2, 16);		\
+} while(0)
+
+#define SIP32_1_ROUND(m, v0, v1, v2, v3)\
+do {					\
+    v3 ^= m;				\
+    SIP32_COMPRESS(v0, v1, v2, v3);	\
+    v0 ^= m;				\
+} while (0)
+
+uint32_t
+sip32_hash13(const uint8_t key[16], const uint8_t *data, size_t len)
+{
+    uint32_t v0, v1, v2, v3;
+    uint32_t m, last;
+    const uint8_t *end = data + len - (len % sizeof(uint32_t));
+
+    /* rely on properly initializes key in random.c,
+     * SipHash documention mentions, that single requirements is
+     * v0 and v1 should be different from v2 and v3.
+     * Since we initialize key with sip_hash24 in a counter mode,
+     * there is 1/2**64 probability of their equivalency/ */
+    v0 = U8TO32_LE(key);
+    v1 = U8TO32_LE(key + sizeof(uint32_t));
+    v2 = U8TO32_LE(key + sizeof(uint32_t)*2);
+    v3 = U8TO32_LE(key + sizeof(uint32_t)*3);
+
+#if BYTE_ORDER == LITTLE_ENDIAN && UNALIGNED_WORD_ACCESS
+    {
+        uint32_t *data32 = (uint32_t *)data;
+        while (data32 != (uint32_t *) end) {
+	    m = *data32++;
+	    SIP32_1_ROUND(m, v0, v1, v2, v3);
+        }
+    }
+#else
+    for (; data != end; data += sizeof(uint32_t)) {
+	m = U8TO32_LE(data);
+	SIP32_1_ROUND(m, v0, v1, v2, v3);
+    }
+#endif
+
+    last = (uint32_t)len << 24;
+    switch (len % sizeof(uint32_t)) {
+	case 3:
+	    last |= ((uint32_t)end[2]) << 16;
+	case 2:
+	    last |= ((uint32_t)end[1]) << 8;
+	case 1:
+	    last |= (uint32_t)end[0];
+	    break;
+	case 0:
+	    break;
+    }
+
+    SIP32_1_ROUND(last, v0, v1, v2, v3);
+
+    v2 ^= 0xff;
+
+    SIP32_COMPRESS(v0, v1, v2, v3);
+    SIP32_COMPRESS(v0, v1, v2, v3);
+    SIP32_COMPRESS(v0, v1, v2, v3);
+
+    v0 ^= v1;
+    v0 ^= v2;
+    v0 ^= v3;
+    return v0;
+}

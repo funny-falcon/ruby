@@ -1521,11 +1521,10 @@ init_siphash(sipseed_keys_t key, uint32_t* cnt)
 st_index_t
 rb_memhash(const void *ptr, long len)
 {
-    sip_uint64_t h = sip_hash13(sipseed.key, ptr, len);
-#ifdef HAVE_UINT64_T
-    return (st_index_t)h;
+#if ST_INDEX_BITS > 4*8
+    return (st_index_t)sip_hash13(sipseed.key, ptr, len);
 #else
-    return (st_index_t)(h.u32[0] ^ h.u32[1]);
+    return (st_index_t)sip32_hash13(sipseed.key, ptr, len);
 #endif
 }
 
