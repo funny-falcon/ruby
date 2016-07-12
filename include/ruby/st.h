@@ -57,7 +57,7 @@ struct st_hash_type {
     st_index_t (*hash)(ANYARGS /*st_data_t*/);        /* st_hash_func* */
 };
 
-#define ST_INDEX_BITS (sizeof(st_index_t) * CHAR_BIT)
+#define ST_INDEX_BITS (SIZEOF_ST_INDEX_T * CHAR_BIT)
 
 #if defined(HAVE_BUILTIN___BUILTIN_CHOOSE_EXPR) && defined(HAVE_BUILTIN___BUILTIN_TYPES_COMPATIBLE_P)
 # define ST_DATA_COMPATIBLE_P(type) \
