@@ -145,23 +145,6 @@ rb_hash(VALUE obj)
 
 long rb_objid_hash(st_index_t index);
 
-long
-rb_dbl_long_hash(double d)
-{
-    /* normalize -0.0 to 0.0 */
-    if (d == 0.0) d = 0.0;
-#if SIZEOF_INT == SIZEOF_VOIDP
-    return rb_memhash(&d, sizeof(d));
-#else
-    {
-	union {double d; uint64_t i;} u;
-
-	u.d = d;
-	return rb_objid_hash(u.i);
-    }
-#endif
-}
-
 #if SIZEOF_INT == SIZEOF_VOIDP
 static const st_index_t str_seed = 0xfa835867;
 #else
@@ -199,7 +182,7 @@ any_hash_general(VALUE a, int strong_p, st_index_t (*other_func)(VALUE))
     }
     else if (BUILTIN_TYPE(a) == T_FLOAT) {
       flt:
-	hnum = rb_dbl_long_hash(rb_float_value(a));
+	hnum = rb_dbl_hash_st(rb_float_value(a));
     }
     else {
 	hnum = other_func(a);
@@ -236,42 +219,29 @@ rb_any_hash(VALUE a) {
     return any_hash(a, obj_any_hash);
 }
 
-/* Here is a hash function for 64-bit key.  It is about 5 times faster
-   (2 times faster when uint128 type is absent) on Haswell than
-   tailored Spooky or City hash function can be.  */
-
-/* Here we two primes with random bit generation.  */
-static const uint64_t prime1 = 0x2e0bb864e9ea7df5ULL;
-static const uint64_t prime2 = 0xcdb32970830fcaa1ULL;
-
-
-static inline uint64_t
-mult_and_mix (uint64_t m1, uint64_t m2)
+st_index_t
+rb_dbl_hash_st(double d)
 {
-#if defined(__GNUC__) && UINT_MAX != ULONG_MAX
-    __uint128_t r = (__uint128_t) m1 * (__uint128_t) m2;
-    return (uint64_t) (r >> 64) ^ (uint64_t) r;
-#else
-    uint64_t hm1 = m1 >> 32, hm2 = m2 >> 32;
-    uint64_t lm1 = m1, lm2 = m2;
-    uint64_t v64_128 = hm1 * hm2;
-    uint64_t v32_96 = hm1 * lm2 + lm1 * hm2;
-    uint64_t v1_32 = lm1 * lm2;
-
-    return (v64_128 + (v32_96 >> 32)) ^ ((v32_96 << 32) + v1_32);
-#endif
-}
-
-static inline uint64_t
-key64_hash (uint64_t key, uint32_t seed)
-{
-    return mult_and_mix(key + seed, prime1);
+    st_index_t hash;
+    unsigned i;
+#define ind_in_dbl type_roomof(double, st_index_t)
+    union {
+	st_index_t i[ind_in_dbl];
+	double d;
+    } v = { {0} };
+    /* normalize -0.0 to 0.0 */
+    v.d = d == 0.0 ? 0.0 : d;
+    hash = rb_hash_start(v.i[0]);
+    for (i = 1; i < ind_in_dbl; i++) {
+	hash = rb_hash_uint(hash, v.i[i]);
+    }
+    return rb_hash_end(hash);
 }
 
 long
 rb_objid_hash(st_index_t index)
 {
-    return (long)key64_hash(index, (uint32_t)prime2);
+    return rb_hash_end(index);
 }
 
 static st_index_t
@@ -304,18 +274,7 @@ static const struct st_hash_type objhash = {
 static st_index_t
 rb_ident_hash(st_data_t n)
 {
-#ifdef USE_FLONUM /* RUBY */
-    /*
-     * - flonum (on 64-bit) is pathologically bad, mix the actual
-     *   float value in, but do not use the float value as-is since
-     *   many integers get interpreted as 2.0 or -2.0 [Bug #10761]
-     */
-    if (FLONUM_P(n)) {
-	n ^= (st_data_t)rb_float_value(n);
-    }
-#endif
-
-    return (st_index_t) key64_hash((st_index_t)n, (uint32_t) prime2);
+    return rb_hash_end((st_index_t)n);
 }
 
 static const struct st_hash_type identhash = {
