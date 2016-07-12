@@ -143,7 +143,8 @@ CONSTFUNC(st_index_t st_hash_uint32(st_index_t h, uint32_t i));
 CONSTFUNC(st_index_t st_hash_uint(st_index_t h, st_index_t i));
 CONSTFUNC(st_index_t st_hash_end(st_index_t h));
 CONSTFUNC(st_index_t st_hash_start(st_index_t h));
-#define st_hash_start(h) ((st_index_t)(h))
+void st_hash_seed(st_index_t seed[2]); /* init global seed */
+
 
 RUBY_SYMBOL_EXPORT_END
 

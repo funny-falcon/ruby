@@ -1473,7 +1473,6 @@ random_s_rand(int argc, VALUE *argv, VALUE obj)
 #endif
 #include "siphash.c"
 
-static st_index_t hashseed;
 typedef uint8_t sipseed_keys_t[16];
 static union {
     sipseed_keys_t key;
@@ -1483,19 +1482,16 @@ static union {
 static void
 init_hashseed(struct MT *mt)
 {
-    hashseed = genrand_int32(mt);
-#if SIZEOF_ST_INDEX_T*CHAR_BIT > 4*8
-    hashseed <<= 32;
-    hashseed |= genrand_int32(mt);
-#endif
-#if SIZEOF_ST_INDEX_T*CHAR_BIT > 8*8
-    hashseed <<= 32;
-    hashseed |= genrand_int32(mt);
-#endif
-#if SIZEOF_ST_INDEX_T*CHAR_BIT > 12*8
-    hashseed <<= 32;
-    hashseed |= genrand_int32(mt);
-#endif
+    st_index_t hashseed[2];
+    int i,b;
+    for (i = 0; i < 2; i++) {
+	hashseed[i] = genrand_int32(mt);
+	for (b = ST_INDEX_BITS - 32; b > 0; b -= 32) {
+	    hashseed[i] <<= 32;
+	    hashseed[i] |= genrand_int32(mt);
+	}
+    }
+    st_hash_seed(hashseed);
 }
 
 static void
@@ -1505,12 +1501,6 @@ init_siphash(struct MT *mt)
 
     for (i = 0; i < numberof(sipseed.u32); ++i)
 	sipseed.u32[i] = genrand_int32(mt);
-}
-
-st_index_t
-rb_hash_start(st_index_t h)
-{
-    return st_hash_start(hashseed + h);
 }
 
 st_index_t
