@@ -1474,33 +1474,48 @@ random_s_rand(int argc, VALUE *argv, VALUE obj)
 #include "siphash.c"
 
 typedef uint8_t sipseed_keys_t[16];
-static union {
+static union sipseed {
     sipseed_keys_t key;
     uint32_t u32[type_roomof(sipseed_keys_t, uint32_t)];
 } sipseed;
 
 static void
-init_hashseed(struct MT *mt)
+init_hashseed(sipseed_keys_t key, uint32_t* cnt)
 {
     st_index_t hashseed[2];
     int i,b;
     for (i = 0; i < 2; i++) {
-	hashseed[i] = genrand_int32(mt);
-	for (b = ST_INDEX_BITS - 32; b > 0; b -= 32) {
+	hashseed[i] = 0;
+	for (b = ST_INDEX_BITS; b > 0; b -= 32) {
+	    sip_uint64_t h = sip_hash24(key, (void*)cnt, sizeof(uint32_t));
+	    (*cnt)++;
+#if ST_INDEX_BITS > 32
 	    hashseed[i] <<= 32;
-	    hashseed[i] |= genrand_int32(mt);
+#endif
+#ifdef HAVE_UINT64_T
+	    hashseed[i] ^= (st_index_t)h;
+#else
+	    hashseed[i] ^= h.u32[0] ^ h.u32[1];
+#endif
 	}
     }
     st_hash_seed(hashseed);
 }
 
 static void
-init_siphash(struct MT *mt)
+init_siphash(sipseed_keys_t key, uint32_t* cnt)
 {
     int i;
 
-    for (i = 0; i < numberof(sipseed.u32); ++i)
-	sipseed.u32[i] = genrand_int32(mt);
+    for (i = 0; i < numberof(sipseed.u32); ++i) {
+	sip_uint64_t h = sip_hash24(key, (void*)cnt, sizeof(uint32_t));
+	(*cnt)++;
+#ifdef HAVE_UINT64_T
+	sipseed.u32[i] = (uint32_t)h ^ (uint32_t)(h >> 32);
+#else
+	sipseed.u32[i] = h.u32[0] ^ h.u32[1];
+#endif
+    }
 }
 
 st_index_t
@@ -1519,20 +1534,15 @@ rb_memhash(const void *ptr, long len)
 void
 Init_RandomSeedCore(void)
 {
-    /*
-      Don't reuse this MT for Random::DEFAULT. Random::DEFAULT::seed shouldn't
-      provide a hint that an attacker guess siphash's seed.
-    */
-    struct MT mt;
-    uint32_t initial_seed[DEFAULT_SEED_CNT];
+    union sipseed seed = { {0} };
+    uint32_t cnt = 1;
 
-    fill_random_seed(initial_seed, DEFAULT_SEED_CNT);
-    init_by_array(&mt, initial_seed, DEFAULT_SEED_CNT);
+    fill_random_seed(seed.u32, numberof(seed.u32));
 
-    init_hashseed(&mt);
-    init_siphash(&mt);
+    init_hashseed(seed.key, &cnt);
+    init_siphash(seed.key, &cnt);
 
-    explicit_bzero(initial_seed, DEFAULT_SEED_LEN);
+    explicit_bzero(seed.key, sizeof(seed.key));
 }
 
 static VALUE
