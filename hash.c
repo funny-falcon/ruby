@@ -175,8 +175,7 @@ any_hash(VALUE a, st_index_t (*other_func)(VALUE))
     }
     else if (BUILTIN_TYPE(a) == T_FLOAT) {
       flt:
-	hval = rb_dbl_hash(rb_float_value(a));
-	hnum = FIX2LONG(hval);
+	hnum = rb_dbl_hash_long(rb_float_value(a));
     }
     else {
 	hnum = other_func(a);
@@ -199,34 +198,29 @@ rb_any_hash(VALUE a)
     return any_hash(a, obj_any_hash);
 }
 
-static st_index_t
-rb_num_hash_start(st_index_t n)
+long
+rb_dbl_hash_long(double d)
 {
-    /*
-     * This hash function is lightly-tuned for Ruby.  Further tuning
-     * should be possible.  Notes:
-     *
-     * - (n >> 3) alone is great for heap objects and OK for fixnum,
-     *   however symbols perform poorly.
-     * - (n >> (RUBY_SPECIAL_SHIFT+3)) was added to make symbols hash well,
-     *   n.b.: +3 to remove most ID scope, +1 worked well initially, too
-     *   n.b.: +1 (instead of 3) worked well initially, too
-     * - (n << 16) was finally added to avoid losing bits for fixnums
-     * - avoid expensive modulo instructions, it is currently only
-     *   shifts and bitmask operations.
-     */
-    return (n >> (RUBY_SPECIAL_SHIFT + 3) ^ (n << 16)) ^ (n >> 3);
+    long hash;
+    unsigned i;
+#define ind_in_dbl type_roomof(double, st_index_t)
+    union {
+	st_index_t i[ind_in_dbl];
+	double d;
+    } v = { {0} };
+    /* normalize -0.0 to 0.0 */
+    v.d = d == 0.0 ? 0.0 : d;
+    hash = rb_hash_start(v.i[0]);
+    for (i = 1; i < ind_in_dbl; i++) {
+	hash = rb_hash_uint(hash, v.i[i]);
+    }
+    return rb_hash_end(hash);
 }
 
 long
 rb_objid_hash(st_index_t index)
 {
-    st_index_t hnum = rb_num_hash_start(index);
-
-    hnum = rb_hash_start(hnum);
-    hnum = rb_hash_uint(hnum, (st_index_t)rb_any_hash);
-    hnum = rb_hash_end(hnum);
-    return hnum;
+    return rb_hash_end(index);
 }
 
 static st_index_t
@@ -258,18 +252,7 @@ static const struct st_hash_type objhash = {
 static st_index_t
 rb_ident_hash(st_data_t n)
 {
-#ifdef USE_FLONUM /* RUBY */
-    /*
-     * - flonum (on 64-bit) is pathologically bad, mix the actual
-     *   float value in, but do not use the float value as-is since
-     *   many integers get interpreted as 2.0 or -2.0 [Bug #10761]
-     */
-    if (FLONUM_P(n)) {
-	n ^= (st_data_t)rb_float_value(n);
-    }
-#endif
-
-    return (st_index_t)rb_num_hash_start((st_index_t)n);
+    return rb_hash_end((st_index_t)n);
 }
 
 static const struct st_hash_type identhash = {
