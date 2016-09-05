@@ -11,6 +11,5 @@ class Test_StForeachUnpack < Test::Unit::TestCase
 
   def test_st_foreach_unpack
     assert_nil Bug.unp_st_foreach(:unpacked), "goto unpacked"
-    assert_nil Bug.unp_st_foreach(:unpack_delete), "if (!ptr) return 0"
   end
 end

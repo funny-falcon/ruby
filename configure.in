@@ -4511,6 +4511,17 @@ else
 fi
 AC_SUBST(USE_RUBYGEMS)
 
+AC_ARG_ENABLE(hugehash,
+	AS_HELP_STRING([--enable-hugehash], [on 64bit platform enable hashes with more than 2**31 elements]),
+	[enable_hugehash="$enableval"], [enable_hugehash=no])
+if test x"$enable_hugehash" = xyes; then
+    AC_DEFINE(ENABLE_HUGEHASH, 1)
+    HUGEHASH=YES
+else
+    HUGEHASH=NO
+fi
+AC_SUBST(HUGEHASH)
+
 arch_hdrdir="${EXTOUT}/include/${arch}/ruby"
 AS_MKDIR_P("${arch_hdrdir}")
 config_h="${arch_hdrdir}/config.h"

@@ -52,6 +52,14 @@ typedef st_index_t st_hash_func(st_data_t);
 typedef char st_check_for_sizeof_st_index_t[SIZEOF_VOIDP == (int)sizeof(st_index_t) ? 1 : -1];
 #define SIZEOF_ST_INDEX_T SIZEOF_VOIDP
 
+#if ENABLE_HUGEHASH
+typedef st_index_t st_idx_t;
+#define SIZEOF_ST_IDX_T SIZEOF_VOIDP
+#else /* force 32bit indices and hash sum even on 64bit platform */
+typedef uint32_t st_idx_t;
+#define SIZEOF_ST_IDX_T SIZEOF_UINT32_T
+#endif
+
 struct st_hash_type {
     int (*compare)(ANYARGS /*st_data_t, st_data_t*/); /* st_compare_func* */
     st_index_t (*hash)(ANYARGS /*st_data_t*/);        /* st_hash_func* */
@@ -66,33 +74,22 @@ struct st_hash_type {
 # define ST_DATA_COMPATIBLE_P(type) 0
 #endif
 
+struct st_list_entry {
+    st_idx_t prev, next;
+};
+
 struct st_table {
     const struct st_hash_type *type;
-    st_index_t num_bins;
-    unsigned int entries_packed : 1;
-#ifdef __GNUC__
-    /*
-     * C spec says,
-     *   A bit-field shall have a type that is a qualified or unqualified
-     *   version of _Bool, signed int, unsigned int, or some other
-     *   implementation-defined type. It is implementation-defined whether
-     *   atomic types are permitted.
-     * In short, long and long long bit-field are implementation-defined
-     * feature. Therefore we want to suppress a warning explicitly.
-     */
-    __extension__
-#endif
-    st_index_t num_entries : ST_INDEX_BITS - 1;
     union {
-	struct {
-	    struct st_table_entry **bins;
-	    void *private_list_head[2];
-	} big;
-	struct {
-	    struct st_packed_entry *entries;
-	    st_index_t real_entries;
-	} packed;
+	struct st_table_entry* entries;
+	st_idx_t* bins;
+	uint8_t*  smallbins;
+	uint16_t* medbins;
     } as;
+    st_idx_t num_entries;
+    st_idx_t first, last;
+    unsigned sz : 8;
+    unsigned rebuild_num : 24;
 };
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)
