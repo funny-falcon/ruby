@@ -278,7 +278,8 @@ st_init_table_with_size(const struct st_hash_type *type, st_index_t size)
     tbl = st_alloc_table();
     tbl->type = type;
     tbl->num_entries = 0;
-    tbl->sz = new_sz(size);	/* round up to power-of-two */
+    /* XXX: assert(size <= st_idx_max) is needed? */
+    tbl->sz = new_sz((st_idx_t) size);	/* round up to power-of-two */
     tbl->as.entries = st_grow_data(NULL, tbl->sz, 0);
     tbl->rebuild_num = 0;
     tbl->first = 0;
@@ -672,7 +673,8 @@ st_reclaim_without_bins(register st_table *table)
     }
 
     table->first = 0;
-    table->last = ptr - table->as.entries;
+    /* XXX: ptr-table->as.entries never overflow as st_idx_t? */
+    table->last = (st_idx_t) (ptr - table->as.entries);
 }
 
 static void
