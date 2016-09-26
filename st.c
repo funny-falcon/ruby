@@ -144,7 +144,8 @@ need_shrink(st_idx_t num_entries, int sz)
 static inline st_index_t
 do_hash(st_data_t key, const st_table * table)
 {
-    st_index_t h = (*table->type->hash)(key);
+    st_index_t h = table->use_strong == 0 ? (*table->type->hash)(key) :
+	    (*table->type->stronghash)(key);
     return h != DELETED ? h : 0x71fe900d;
 }
 
@@ -250,6 +251,7 @@ stat_col(void)
     fprintf(f, "collision: %d / %d (%6.2f)\n", collision.all, collision.total,
 	    ((double)collision.all / (collision.total)) * 100);
     fprintf(f, "num: %d, str: %d, strcase: %d\n", collision.num, collision.str, collision.strcase);
+    fprintf(f, "max: %d\n", collision.max);
     fclose(f);
 }
 #endif
@@ -508,36 +510,52 @@ find_exact_key(const st_table *table, st_data_t key, st_index_t hash_val)
     }
 }
 
-static inline void
+/* Switch to strong hash if collision chain is greater than ST_STRONG_THRESHOLD.
+ * ST_STRONG_THRESHOLD is chosen to never switch during `make check`
+ * (and, probably, in real life).
+ * So, additional test run with lower threshold should be run occasionally.
+ */
+#define ST_STRONG_THRESHOLD 40
+static inline int
 insert_entry_simple(st_table* table, st_index_t hash_val, st_idx_t idx)
 {
     const void* bins = table->as.bins;
     int sz = table->sz;
+    int cnt = 0;
     st_idx_t bin_pos;
     FL_INIT(hash_val);
-    for (;;FL_INC()) {
+    for (;;FL_INC(), cnt++) {
 	bin_pos = FL_POS(table);
 	if (bin_get(bins, sz, bin_pos) == IDX_NULL)
 	    break;
     }
     bin_set(bins, sz, bin_pos, idx+1);
+#if defined(HASH_LOG) && collision_check
+    if (table->type->stronghash && cnt > collision.max) collision.max = cnt;
+#endif
+    return cnt >= ST_STRONG_THRESHOLD;
 }
 
-static inline void
+static inline int
 insert_entry_reuse(st_table* table, st_index_t hash_val, st_idx_t idx)
 {
     const void* bins = table->as.bins;
     const st_table_entry* entries = table->as.entries;
     int sz = table->sz;
+    int cnt = 0;
     st_idx_t bin_pos, old;
     FL_INIT(hash_val);
-    for (;;FL_INC()) {
+    for (;;FL_INC(), cnt++) {
 	bin_pos = FL_POS(table);
 	old = bin_get(bins, sz, bin_pos);
 	if (old == IDX_NULL || entries[RI(old)].hash == DELETED)
 	    break;
     }
     bin_set(bins, sz, bin_pos, idx+1);
+#if defined(HASH_LOG) && collision_check
+    if (table->type->stronghash && cnt > collision.max) collision.max = cnt;
+#endif
+    return cnt >= ST_STRONG_THRESHOLD;
 }
 
 int
@@ -586,10 +604,15 @@ add_direct(st_table *table, st_data_t key, st_data_t value,
     entry->key = key;
     entry->record = value;
     if (st_sz[table->sz].nbins != 0) {
+	int attack;
 	if (table->num_entries == table->last) {
-	    insert_entry_simple(table, hash_val, en_idx);
+	    attack = insert_entry_simple(table, hash_val, en_idx);
 	} else {
-	    insert_entry_reuse(table, hash_val, en_idx);
+	    attack = insert_entry_reuse(table, hash_val, en_idx);
+	}
+	if (UNLIKELY(attack) && !table->use_strong && table->type->stronghash != NULL) {
+	    table->use_strong = 1;
+	    st_recalc_hashvals(table);
 	}
     }
 }
@@ -740,6 +763,22 @@ st_rehash(register st_table *table)
     if (bins_size(table->sz) != bins_size(table->sz-1)) {
 	st_fix_bins(table);
     }
+}
+
+void
+st_recalc_hashvals(st_table *table)
+{
+    st_idx_t i;
+    st_table_entry *ptr;
+
+    ptr = table->as.entries + table->first;
+    for (i = table->first; i < table->last; i++, ptr++) {
+	if (ptr->hash != DELETED) {
+	    ptr->hash = do_hash(ptr->key, table);
+	}
+    }
+    st_fix_bins(table);
+    table->rebuild_num++;
 }
 
 st_table*

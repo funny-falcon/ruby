@@ -894,6 +894,7 @@ extern const char ruby_digitmap[];
 VALUE rb_big_fdiv(VALUE x, VALUE y);
 VALUE rb_big_uminus(VALUE x);
 VALUE rb_big_hash(VALUE);
+long  rb_big_hash_long(VALUE);
 VALUE rb_big_odd_p(VALUE);
 VALUE rb_big_even_p(VALUE);
 size_t rb_big_size(VALUE);

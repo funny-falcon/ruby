@@ -6648,6 +6648,12 @@ rb_big_hash(VALUE x)
     return ST2FIX(hash);
 }
 
+long
+rb_big_hash_long(VALUE x)
+{
+    return st_hash(BDIGITS(x), sizeof(BDIGIT)*BIGNUM_LEN(x), 0xb19 ^ BIGNUM_SIGN(x));
+}
+
 /*
  * call-seq:
  *   big.coerce(numeric)  ->  array
