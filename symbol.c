@@ -68,6 +68,7 @@ static struct symbols {
 
 static const struct st_hash_type symhash = {
     rb_str_hash_cmp,
+    rb_str_hash_weak,
     rb_str_hash,
 };
 

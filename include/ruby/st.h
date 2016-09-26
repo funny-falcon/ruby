@@ -63,6 +63,7 @@ typedef uint32_t st_idx_t;
 struct st_hash_type {
     int (*compare)(ANYARGS /*st_data_t, st_data_t*/); /* st_compare_func* */
     st_index_t (*hash)(ANYARGS /*st_data_t*/);        /* st_hash_func* */
+    st_index_t (*stronghash)(ANYARGS /*st_data_t*/);        /* st_hash_func* */
 };
 
 #define ST_INDEX_BITS (SIZEOF_ST_INDEX_T * CHAR_BIT)
@@ -86,7 +87,8 @@ struct st_table {
     st_idx_t num_entries;
     st_idx_t first, last;
     unsigned sz : 8;
-    st_idx_t rebuild_num : sizeof(st_idx_t)*8-8;
+    unsigned use_strong: 1;
+    st_idx_t rebuild_num : sizeof(st_idx_t)*8-9;
 };
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)
@@ -125,6 +127,7 @@ void st_free_table(st_table *);
 void st_cleanup_safe(st_table *, st_data_t);
 void st_clear(st_table *);
 st_table *st_copy(st_table *);
+void st_recalc_hashvals(st_table*);
 CONSTFUNC(int st_numcmp(st_data_t, st_data_t));
 CONSTFUNC(st_index_t st_numhash(st_data_t));
 PUREFUNC(int st_locale_insensitive_strcasecmp(const char *s1, const char *s2));
