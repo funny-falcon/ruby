@@ -180,22 +180,51 @@ get_loading_table(void)
     return GET_VM()->loading_table;
 }
 
+struct feature_str {
+    const char* str;
+    size_t len;
+};
+
+static struct feature_str
+to_feature_str(VALUE str)
+{
+    struct feature_str res;
+    res.str = RSTRING_PTR(str);
+    res.len = RSTRING_LEN(str);
+    return res;
+}
+
+static struct feature_str
+feature_subseq(struct feature_str orig, size_t beg, size_t len)
+{
+    struct feature_str res;
+    res.str = orig.str +  beg;
+    res.len = len;
+    assert(len <= orig.len);
+    return res;
+}
+
+static st_data_t
+feature_key(struct feature_str str)
+{
+    return st_hash(str.str, str.len, 0xfea7009e);
+}
+
 static void
-features_index_add_single(VALUE short_feature, VALUE offset)
+features_index_add_single(struct feature_str short_feature, VALUE offset)
 {
     struct st_table *features_index;
     VALUE this_feature_index = Qnil;
-    char *short_feature_cstr;
+    st_data_t short_feature_key;
 
     Check_Type(offset, T_FIXNUM);
-    Check_Type(short_feature, T_STRING);
-    short_feature_cstr = StringValueCStr(short_feature);
+    short_feature_key = feature_key(short_feature);
 
     features_index = get_loaded_features_index_raw();
-    st_lookup(features_index, (st_data_t)short_feature_cstr, (st_data_t *)&this_feature_index);
+    st_lookup(features_index, short_feature_key, (st_data_t *)&this_feature_index);
 
     if (NIL_P(this_feature_index)) {
-	st_insert(features_index, (st_data_t)ruby_strdup(short_feature_cstr), (st_data_t)offset);
+	st_insert(features_index, short_feature_key, (st_data_t)offset);
     }
     else if (RB_TYPE_P(this_feature_index, T_FIXNUM)) {
 	VALUE feature_indexes[2];
@@ -204,7 +233,7 @@ features_index_add_single(VALUE short_feature, VALUE offset)
 	this_feature_index = (VALUE)xcalloc(1, sizeof(struct RArray));
 	RBASIC(this_feature_index)->flags = T_ARRAY; /* fake VALUE, do not mark/sweep */
 	rb_ary_cat(this_feature_index, feature_indexes, numberof(feature_indexes));
-	st_insert(features_index, (st_data_t)short_feature_cstr, (st_data_t)this_feature_index);
+	st_insert(features_index, short_feature_key, (st_data_t)this_feature_index);
     }
     else {
 	Check_Type(this_feature_index, T_ARRAY);
@@ -221,15 +250,16 @@ features_index_add_single(VALUE short_feature, VALUE offset)
    relies on for its fast lookup.
 */
 static void
-features_index_add(VALUE feature, VALUE offset)
+features_index_add(VALUE featurev, VALUE offset)
 {
-    VALUE short_feature;
-    const char *feature_str, *feature_end, *ext, *p;
+    struct feature_str feature, short_feature;
+    const char *feature_end, *ext, *p;
 
-    feature_str = StringValuePtr(feature);
-    feature_end = feature_str + RSTRING_LEN(feature);
+    StringValue(featurev);
+    feature = to_feature_str(featurev);
+    feature_end = feature.str + feature.len;
 
-    for (ext = feature_end; ext > feature_str; ext--)
+    for (ext = feature_end; ext > feature.str; ext--)
 	if (*ext == '.' || *ext == '/')
 	    break;
     if (*ext != '.')
@@ -242,22 +272,22 @@ features_index_add(VALUE feature, VALUE offset)
 	long beg;
 
 	p--;
-	while (p >= feature_str && *p != '/')
+	while (p >= feature.str && *p != '/')
 	    p--;
-	if (p < feature_str)
+	if (p < feature.str)
 	    break;
 	/* Now *p == '/'.  We reach this point for every '/' in `feature`. */
-	beg = p + 1 - feature_str;
-	short_feature = rb_str_subseq(feature, beg, feature_end - p - 1);
+	beg = p + 1 - feature.str;
+	short_feature = feature_subseq(feature, beg, feature_end - p - 1);
 	features_index_add_single(short_feature, offset);
 	if (ext) {
-	    short_feature = rb_str_subseq(feature, beg, ext - p - 1);
+	    short_feature = feature_subseq(feature, beg, ext - p - 1);
 	    features_index_add_single(short_feature, offset);
 	}
     }
     features_index_add_single(feature, offset);
     if (ext) {
-	short_feature = rb_str_subseq(feature, 0, ext - feature_str);
+	short_feature = feature_subseq(feature, 0, ext - feature.str);
 	features_index_add_single(short_feature, offset);
     }
 }
@@ -270,7 +300,6 @@ loaded_features_index_clear_i(st_data_t key, st_data_t val, st_data_t arg)
 	rb_ary_free(obj);
 	xfree((void *)obj);
     }
-    xfree((char *)key);
     return ST_DELETE;
 }
 
@@ -384,6 +413,9 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
     st_table *loading_tbl, *features_index;
     st_data_t data;
     int type;
+    struct feature_str fstr;
+    fstr.str = feature;
+    fstr.len = strlen(feature);
 
     if (fn) *fn = 0;
     if (ext) {
@@ -399,7 +431,7 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
     features = get_loaded_features();
     features_index = get_loaded_features_index();
 
-    st_lookup(features_index, (st_data_t)feature, (st_data_t *)&this_feature_index);
+    st_lookup(features_index, feature_key(fstr), (st_data_t *)&this_feature_index);
     /* We search `features` for an entry such that either
          "#{features[i]}" == "#{load_path[j]}/#{feature}#{e}"
        for some j, or
@@ -1196,7 +1228,7 @@ Init_load(void)
     rb_define_virtual_variable("$LOADED_FEATURES", get_loaded_features, 0);
     vm->loaded_features = rb_ary_new();
     vm->loaded_features_snapshot = rb_ary_tmp_new(0);
-    vm->loaded_features_index = st_init_strtable();
+    vm->loaded_features_index = st_init_numtable();
 
     rb_define_global_function("load", rb_f_load, -1);
     rb_define_global_function("require", rb_f_require, 1);
