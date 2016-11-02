@@ -1088,29 +1088,29 @@ st_hash_seed(st_index_t seed[3])
  * 64bit version is extrapolation of 32bit version */
 #define BIG_CONSTANT(x,y) ((st_index_t)(x)<<32|(st_index_t)(y))
 
+#if ST_INDEX_BITS <= 32
+#define C1 0xcc9e2d51
+#define C2 0x1b873593
+#else
+#define C1 BIG_CONSTANT(0x87c37b91,0x114253d5);
+#define C2 BIG_CONSTANT(0x4cf5ad43,0x2745937f);
+#endif
 static inline st_index_t
 murmur_step(st_index_t h, st_index_t k)
 {
 #if ST_INDEX_BITS <= 32
 #define r1 (15)
 #define r2 (13)
-    const st_index_t c1 = 0xcc9e2d51;
-    const st_index_t c2 = 0x1b873593;
 #else
 #define r1 (31)
 #define r2 (27)
-    const st_index_t c1 = BIG_CONSTANT(0x87c37b91,0x114253d5);
-    const st_index_t c2 = BIG_CONSTANT(0x4cf5ad43,0x2745937f);
 #endif
     k ^= st_seed[0];
-    k *= c1;
+    k *= C1;
     k = ROTL(k, r1);
-    k ^= st_seed[1];
-    k *= c2;
-
-    h ^= k;
+    h += k;
+    h = h*9 + st_seed[1];
     h = ROTL(h, r2);
-    h = h*5 + st_seed[2];
     return h;
 #undef r1
 #undef r2
@@ -1136,7 +1136,6 @@ murmur_finish(st_index_t h)
     h += st_seed[0];
     h ^= h >> r1;
     h *= c1;
-    h += st_seed[1];
     h ^= h >> r2;
     h *= c2;
     h ^= h >> r3;
@@ -1251,6 +1250,22 @@ st_hash(const void *ptr, size_t len, st_index_t h)
 
     t = 0;
     switch (len) {
+#if UNALIGNED_WORD_ACCESS && SIZEOF_ST_INDEX_T <= 8
+	case 1: case 2: case 3:
+	    t = data_at(0) | data_at(len/2)<<8 | data_at(len-1)<<16;
+	case 0:
+	    goto skip_tail;
+#if SIZEOF_ST_INDEX_T > 4
+	case 4:
+	    t = (st_index_t)*(uint32_t*)data;
+	    goto skip_tail;
+	case 5: case 6: case 7:
+	    t = (st_index_t)*(uint32_t*)data;
+	    data += 4;
+	    len -= 4;
+	    t |= data_at(0)<<32 | data_at(len/2)<<40 | data_at(len-1)<<48;
+#endif
+#else
 #ifdef WORDS_BIGENDIAN
 # define UNALIGNED_ADD(n) case (n) + 1: \
 	t |= data_at(n) << CHAR_BIT*(SIZEOF_ST_INDEX_T - (n) - 1)
@@ -1260,10 +1275,10 @@ st_hash(const void *ptr, size_t len, st_index_t h)
 #endif
 	UNALIGNED_ADD_ALL;
 #undef UNALIGNED_ADD
-# if !UNALIGNED_WORD_ACCESS
+#endif
       skip_tail:
-# endif
-	h = murmur_step(h, t);
+	h ^= t;
+	h *= C2;
     }
     h ^= l;
 
