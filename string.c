@@ -245,6 +245,7 @@ static VALUE register_fstring(VALUE str);
 
 const struct st_hash_type rb_fstring_hash_type = {
     fstring_cmp,
+    rb_str_hash_weak,
     rb_str_hash,
 };
 
@@ -2936,6 +2937,16 @@ rb_str_hash(VALUE str)
 	e = 0;
     }
     return rb_memhash((const void *)RSTRING_PTR(str), RSTRING_LEN(str)) ^ e;
+}
+
+st_index_t
+rb_str_hash_weak(VALUE str)
+{
+    int e = ENCODING_GET(str);
+    if (e && rb_enc_str_coderange(str) == ENC_CODERANGE_7BIT) {
+	e = 0;
+    }
+    return st_hash((const void *)RSTRING_PTR(str), RSTRING_LEN(str), e);
 }
 
 int

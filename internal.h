@@ -1415,6 +1415,7 @@ VALUE rb_enc_str_scrub(rb_encoding *enc, VALUE str, VALUE repl);
 #define is_ascii_string(str) (rb_enc_str_coderange(str) == ENC_CODERANGE_7BIT)
 #define is_broken_string(str) (rb_enc_str_coderange(str) == ENC_CODERANGE_BROKEN)
 size_t rb_str_memsize(VALUE);
+st_index_t rb_str_hash_weak(VALUE);
 VALUE rb_sym_proc_call(ID mid, int argc, const VALUE *argv, VALUE passed_proc);
 VALUE rb_sym_to_proc(VALUE sym);
 
