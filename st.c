@@ -35,7 +35,8 @@
 typedef struct st_table_entry st_table_entry;
 
 struct st_table_entry {
-    st_index_t hash;
+    st_idx_t hash;
+    st_idx_t next;
     st_data_t key;
     st_data_t record;
 };
@@ -108,7 +109,7 @@ static struct st_sizes {
    st_idx_t_sz = ARGV[0].to_i
    st_data_t_sz = ARGV[1].to_i
    size_t_log = st_data_t_sz < 8 ? 31 : 47 # ptrdiff_t should not overflow
-   entry_sz = 3 * st_data_t_sz
+   entry_sz = 2 * st_data_t_sz + 2 * st_idx_t_sz
    def memsizes(log); a = 32; while a+a/2 <= 2**log; yield a; yield a+a/2; a*=2; end; end
    def pow2(v); [1,2,4,8,16].each{|i| v|=v>>i}; v+1; end
    sizes = []
@@ -140,11 +141,11 @@ need_shrink(st_idx_t num_entries, int sz)
     return sz > 1 && num_entries < nen / 2;
 }
 
-static inline st_index_t
+static inline st_idx_t
 do_hash(st_data_t key, const st_table * table)
 {
-    st_index_t h = table->use_strong == 0 ? (*table->type->hash)(key) :
-	    (*table->type->stronghash)(key);
+    st_idx_t h = (st_idx_t)(table->use_strong == 0 ? (*table->type->hash)(key) :
+	    (*table->type->stronghash)(key));
     return h != DELETED ? h : 0x71fe900d;
 }
 
@@ -405,6 +406,10 @@ bin_set(const void *bins, int sz, st_idx_t bin_pos, st_idx_t idx)
 	((st_idx_t*)bins)[Z-bin_pos] = idx;
     }
 }
+#define BIN_GET(bins, sz, hash_val) \
+	bin_get((bins), (sz), (st_idx_t)(hash_val) & (st_sz[sz].nbins-1))
+#define BIN_SET(bins, sz, hash_val, idx) \
+	bin_set((bins), (sz), (st_idx_t)(hash_val) & (st_sz[sz].nbins-1), (idx))
 
 #ifdef HASH_LOG
 static void
@@ -434,20 +439,9 @@ EQUAL(const st_table *table, st_data_t key, const st_table_entry* ptr) {
     return key == ptr->key || (*table->type->compare)(key, ptr->key) == 0;
 }
 
-/* Find Loop */
-#define ST_MIX_BITS 1
-#if ST_MIX_BITS
-#define FL_INIT(hash) st_idx_t flpos = (st_idx_t)(hash), fldlt = 1; \
-		      st_index_t flmix = ROTL((hash), 17)
-#define FL_INC() (flpos += fldlt++), (fldlt += (st_idx_t)(flmix >>= 7))
-#else
-#define FL_INIT(hash) st_idx_t flpos = (st_idx_t)(hash), fldlt = 1
-#define FL_INC() flpos += fldlt++
-#endif
-#define FL_POS(table) ((flpos) & (st_sz[(table)->sz].nbins-1))
-
-static st_idx_t
-find_entry(const st_table *table, st_data_t key, st_index_t hash_val)
+#define ST_STRONG_THRESHOLD 40
+static inline st_idx_t
+find_entry(st_table *table, st_data_t key, st_idx_t hash_val)
 {
     st_idx_t rebuild_num ST_UNUSED = table->rebuild_num;
     st_idx_t idx;
@@ -464,25 +458,24 @@ find_entry(const st_table *table, st_data_t key, st_index_t hash_val)
 	st_assert(rebuild_num == table->rebuild_num);
 	return IDX_NULL;
     } else {
-	const void* bins = table->as.bins;
 	const st_table_entry* entries = table->as.entries;
-	FL_INIT(hash_val);
+	int cnt = 0;
+	idx = BIN_GET(table->as.bins, sz, hash_val);
 	FOUND_ENTRY;
-	for (;;FL_INC()) {
-	    idx = bin_get(bins, sz, FL_POS(table));
-	    if (idx == IDX_NULL) break;
+	for (; idx != IDX_NULL; idx = ptr->next, cnt++) {
 	    ptr = entries + RI(idx);
 	    if (ptr->hash == hash_val && EQUAL(table, key, ptr))
 		break;
 	    COLLISION;
 	}
+	table->attack = cnt > ST_STRONG_THRESHOLD;
 	st_assert(rebuild_num == table->rebuild_num);
 	return idx;
     }
 }
 
 static st_idx_t
-find_exact_key(const st_table *table, st_data_t key, st_index_t hash_val)
+find_exact_key(const st_table *table, st_data_t key, st_idx_t hash_val)
 {
     st_idx_t idx;
     const st_table_entry* ptr;
@@ -493,14 +486,9 @@ find_exact_key(const st_table *table, st_data_t key, st_index_t hash_val)
 	    idx++;
 	return idx < table->last ? idx+1 : IDX_NULL;
     } else {
-	const void* bins = table->as.bins;
 	const st_table_entry* entries = table->as.entries;
-	int sz = table->sz;
-	FL_INIT(hash_val);
-	for (;;FL_INC()) {
-	    idx = bin_get(bins, sz, FL_POS(table));
-	    if (idx == IDX_NULL)
-		break;
+	idx = BIN_GET(table->as.bins, table->sz, hash_val);
+	for (; idx != IDX_NULL; idx = ptr->next) {
 	    ptr = entries + RI(idx);
 	    if (ptr->hash == hash_val && ptr->key == key)
 		break;
@@ -514,47 +502,14 @@ find_exact_key(const st_table *table, st_data_t key, st_index_t hash_val)
  * (and, probably, in real life).
  * So, additional test run with lower threshold should be run occasionally.
  */
-#define ST_STRONG_THRESHOLD 40
-static inline int
-insert_entry_simple(st_table* table, st_index_t hash_val, st_idx_t idx)
+static inline void
+insert_entry_simple(st_table* table, st_idx_t hash_val, st_table_entry* ptr, st_idx_t idx)
 {
     const void* bins = table->as.bins;
     int sz = table->sz;
-    int cnt = 0;
-    st_idx_t bin_pos;
-    FL_INIT(hash_val);
-    for (;;FL_INC(), cnt++) {
-	bin_pos = FL_POS(table);
-	if (bin_get(bins, sz, bin_pos) == IDX_NULL)
-	    break;
-    }
-    bin_set(bins, sz, bin_pos, idx+1);
-#if defined(HASH_LOG) && collision_check
-    if (table->type->stronghash && cnt > collision.max) collision.max = cnt;
-#endif
-    return cnt >= ST_STRONG_THRESHOLD;
-}
-
-static inline int
-insert_entry_reuse(st_table* table, st_index_t hash_val, st_idx_t idx)
-{
-    const void* bins = table->as.bins;
-    const st_table_entry* entries = table->as.entries;
-    int sz = table->sz;
-    int cnt = 0;
-    st_idx_t bin_pos, old;
-    FL_INIT(hash_val);
-    for (;;FL_INC(), cnt++) {
-	bin_pos = FL_POS(table);
-	old = bin_get(bins, sz, bin_pos);
-	if (old == IDX_NULL || entries[RI(old)].hash == DELETED)
-	    break;
-    }
-    bin_set(bins, sz, bin_pos, idx+1);
-#if defined(HASH_LOG) && collision_check
-    if (table->type->stronghash && cnt > collision.max) collision.max = cnt;
-#endif
-    return cnt >= ST_STRONG_THRESHOLD;
+    st_idx_t old = BIN_GET(bins, sz, hash_val);
+    ptr->next = old;
+    BIN_SET(bins, sz, hash_val, idx+1);
 }
 
 int
@@ -587,7 +542,7 @@ st_get_key(st_table *table, register st_data_t key, st_data_t *result)
 
 static inline void
 add_direct(st_table *table, st_data_t key, st_data_t value,
-	   st_index_t hash_val)
+	   st_idx_t hash_val)
 {
     register st_table_entry *entry;
     st_idx_t en_idx;
@@ -600,16 +555,12 @@ add_direct(st_table *table, st_data_t key, st_data_t value,
     table->num_entries++;
     entry = &table->as.entries[en_idx];
     entry->hash = hash_val;
+    entry->next = 0;
     entry->key = key;
     entry->record = value;
     if (st_sz[table->sz].nbins != 0) {
-	int attack;
-	if (table->num_entries == table->last) {
-	    attack = insert_entry_simple(table, hash_val, en_idx);
-	} else {
-	    attack = insert_entry_reuse(table, hash_val, en_idx);
-	}
-	if (UNLIKELY(attack) && !table->use_strong && table->type->stronghash != NULL) {
+	insert_entry_simple(table, hash_val, entry, en_idx);
+	if (UNLIKELY(table->attack) && !table->use_strong && table->type->stronghash != NULL) {
 	    table->use_strong = 1;
 	    st_recalc_hashvals(table);
 	}
@@ -619,7 +570,7 @@ add_direct(st_table *table, st_data_t key, st_data_t value,
 int
 st_insert(register st_table *table, register st_data_t key, st_data_t value)
 {
-    st_index_t hash_val = do_hash(key, table);
+    st_idx_t hash_val = do_hash(key, table);
     st_idx_t idx = find_entry(table, key, hash_val);
 
     if (idx == IDX_NULL) {
@@ -636,7 +587,7 @@ int
 st_insert2(register st_table *table, register st_data_t key, st_data_t value,
 	   st_data_t (*func)(st_data_t))
 {
-    st_index_t hash_val;
+    st_idx_t hash_val;
     st_idx_t idx;
     st_idx_t rebuild_num ST_UNUSED = table->rebuild_num;
 
@@ -670,11 +621,10 @@ st_check_table(st_table *table) {
 	st_table_entry* end = table->as.entries + table->last;
 	for (; ptr != end; idx++, ptr++) {
 	    if (ptr->hash != DELETED) {
-		FL_INIT(ptr->hash);
-		for (;;FL_INC()) {
-		    st_idx_t cidx = bin_get(table, FL_POS(table));
-		    if (RI(cidx) == idx) break;
+		st_idx_t cidx = BIN_GET(table->as.bins, table->sz, ptr->hash);
+		while (RI(cidx) != idx) {
 		    assert(cidx != IDX_NULL);
+		    cidx = table->as.entries[RI(cidx)].next;
 		}
 	    }
 	}
@@ -714,7 +664,7 @@ st_fix_bins(st_table *table)
 	ptr = table->as.entries + table->first;
 	for (i = table->first; i < table->last; i++, ptr++) {
 	    if (ptr->hash != DELETED) {
-		insert_entry_simple(table, ptr->hash, i);
+		insert_entry_simple(table, ptr->hash, ptr, i);
 	    }
 	}
 	st_check_table(table);
@@ -799,12 +749,28 @@ st_copy(st_table *old_table)
 }
 
 static inline void
-remove_entry(st_table *table, st_idx_t idx)
+remove_entry(st_table *table, st_table_entry* ptr, st_idx_t idx)
 {
-    st_table_entry *ptr;
+    st_idx_t* bins = table->as.bins;
+    int sz = table->sz;
+    st_idx_t pos;
 
     table->num_entries--;
-    ptr = &table->as.entries[idx];
+    if (st_sz[sz].nbins != 0) {
+	pos = BIN_GET(bins, sz, ptr->hash);
+	st_assert(pos != IDX_NULL);
+	if (RI(pos) == idx) {
+	    BIN_SET(bins, sz, ptr->hash, ptr->next);
+	} else {
+	    st_table_entry* optr;
+	    do {
+		optr = table->as.entries + RI(pos);
+		pos = optr->next;
+		assert(pos != IDX_NULL);
+	    } while (RI(pos) != idx);
+	    optr->next = ptr->next;
+	}
+    }
     ptr->hash = DELETED;
     ptr->key = ptr->record = 0;
     if (table->first == idx) {
@@ -818,7 +784,7 @@ remove_entry(st_table *table, st_idx_t idx)
 int
 st_delete(register st_table *table, register st_data_t *key, st_data_t *value)
 {
-    st_index_t hash_val;
+    st_idx_t hash_val;
     st_idx_t idx;
     register st_table_entry *ptr;
     st_idx_t rebuild_num ST_UNUSED = table->rebuild_num;
@@ -830,7 +796,7 @@ st_delete(register st_table *table, register st_data_t *key, st_data_t *value)
 	ptr = &table->as.entries[RI(idx)];
 	if (value != 0) *value = ptr->record;
 	*key = ptr->key;
-	remove_entry(table, RI(idx));
+	remove_entry(table, ptr, RI(idx));
 	st_assert(rebuild_num == table->rebuild_num);
 	return 1;
     }
@@ -861,7 +827,7 @@ st_shift(register st_table *table, register st_data_t *key, st_data_t *value)
     st_assert(ptr->hash != DELETED);
     if (value != 0) *value = ptr->record;
     *key = ptr->key;
-    remove_entry(table, idx);
+    remove_entry(table, ptr, idx);
     return 1;
 }
 
@@ -884,7 +850,7 @@ st_cleanup_safe(st_table *table, st_data_t never ST_UNUSED)
 int
 st_update(st_table *table, st_data_t key, st_update_callback_func *func, st_data_t arg)
 {
-    st_index_t hash_val;
+    st_idx_t hash_val;
     st_idx_t idx;
     register st_table_entry *ptr;
     st_idx_t rebuild_num ST_UNUSED = table->rebuild_num;
@@ -923,7 +889,7 @@ st_update(st_table *table, st_data_t key, st_update_callback_func *func, st_data
 	break;
       case ST_DELETE:
 	if (existing) {
-	    remove_entry(table, RI(idx));
+	    remove_entry(table, ptr, RI(idx));
 	}
 	break;
     }
@@ -937,7 +903,7 @@ st_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
     enum st_retval retval;
     st_idx_t rebuild_num = table->rebuild_num;
     st_idx_t idx;
-    st_index_t hash;
+    st_idx_t hash;
     st_data_t key;
 
     ptr = table->as.entries + table->first;
@@ -971,7 +937,7 @@ st_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
 	      case ST_DELETE:
 		st_assert(table->rebuild_num == rebuild_num);
 		if (ptr->hash != DELETED) {
-		    remove_entry(table, idx);
+		    remove_entry(table, ptr, idx);
 		}
 		if (table->num_entries == 0) return 0;
 	    }

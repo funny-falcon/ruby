@@ -88,7 +88,8 @@ struct st_table {
     st_idx_t first, last;
     unsigned sz : 8;
     unsigned use_strong: 1;
-    st_idx_t rebuild_num : sizeof(st_idx_t)*8-9;
+    unsigned attack: 1;
+    st_idx_t rebuild_num : sizeof(st_idx_t)*8-10;
 };
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)
