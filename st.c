@@ -1281,6 +1281,18 @@ st_reverse_foreach(st_table *table, int (*func)(ANYARGS), st_data_t arg)
 }
 #endif
 
+static st_index_t st_seed[3];
+static int st_need_seed = 1;
+void
+st_hash_seed(st_index_t seed[3])
+{
+    assert(st_need_seed);
+    st_seed[0] = seed[0];
+    st_seed[1] = seed[1];
+    st_seed[2] = seed[2];
+    st_need_seed = 0;
+}
+
 #define FNV1_32A_INIT 0x811c9dc5
 
 /*
@@ -1319,16 +1331,15 @@ murmur_step(st_index_t h, st_index_t k)
 #if ST_INDEX_BITS <= 32
 #define r1 (15)
 #define r2 (11)
-#define a 0xe6546b64;
 #else
 #define r1 (31)
 #define r2 (23)
-#define a BIG_CONSTANT(0xe6546b64,0x38495ab5);
 #endif
+    k ^= st_seed[1];
     k *= C1;
     k = ROTL(k, r1);
     h += k;
-    h = h*9 + a;
+    h = h*9 + st_seed[2];
     h = ROTL(h, r2);
     return h;
 }
@@ -1352,6 +1363,7 @@ murmur_finish(st_index_t h)
     const st_index_t c1 = BIG_CONSTANT(0xbf58476d,0x1ce4e5b9);
     const st_index_t c2 = BIG_CONSTANT(0x94d049bb,0x133111eb);
 #endif
+    h += st_seed[1];
 #if ST_INDEX_BITS > 64
     h ^= h >> 64;
     h *= c2;
@@ -1362,7 +1374,7 @@ murmur_finish(st_index_t h)
     h ^= h >> r2;
     h *= c2;
     h ^= h >> r3;
-    return h;
+    return h + st_seed[2];
 }
 #undef r1
 #undef r2
@@ -1374,6 +1386,7 @@ st_hash(const void *ptr, size_t len, st_index_t h)
     const char *data = ptr;
     st_index_t t = 0;
     size_t l = len;
+    assert(!st_need_seed);
 
 #define data_at(n) (st_index_t)((unsigned char)data[(n)])
 #define UNALIGNED_ADD_4 UNALIGNED_ADD(2); UNALIGNED_ADD(1); UNALIGNED_ADD(0)
@@ -1496,8 +1509,9 @@ st_hash(const void *ptr, size_t len, st_index_t h)
 #undef UNALIGNED_ADD
 #endif
       skip_tail:
+	t ^= h;
+	t *= C2;
 	h ^= t;
-	h *= C2;
     }
     h ^= l;
 
@@ -1530,18 +1544,17 @@ st_hash_end(st_index_t h)
     return h;
 }
 
-#undef st_hash_start
 st_index_t
 st_hash_start(st_index_t h)
 {
-    return h;
+    return h + st_seed[0];
 }
 
 static st_index_t
 strhash(st_data_t arg)
 {
     register const char *string = (const char *)arg;
-    return st_hash(string, strlen(string), FNV1_32A_INIT);
+    return st_hash(string, strlen(string), st_seed[0]);
 }
 
 int
