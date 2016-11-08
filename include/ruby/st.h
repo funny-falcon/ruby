@@ -2,7 +2,8 @@
    originally written by Peter Moore @ UCB.
 
    The hash table data strutures were redesigned and the package was
-   rewritten by Vladimir Makarov <vmakarov@redhat.com>.  */
+   rewritten by Vladimir Makarov <vmakarov@redhat.com>.
+   refactored by Sokolov Yura <funny.falcon@gmail.com>  */
 
 #ifndef RUBY_ST_H
 #define RUBY_ST_H 1
@@ -48,15 +49,19 @@ typedef unsigned LONG_LONG st_data_t;
 typedef struct st_table st_table;
 
 typedef st_data_t st_index_t;
-
-/* Maximal value of unsigned integer type st_index_t.  */
-#define MAX_ST_INDEX_VAL (~(st_index_t) 0)
-
 typedef int st_compare_func(st_data_t, st_data_t);
 typedef st_index_t st_hash_func(st_data_t);
 
 typedef char st_check_for_sizeof_st_index_t[SIZEOF_VOIDP == (int)sizeof(st_index_t) ? 1 : -1];
 #define SIZEOF_ST_INDEX_T SIZEOF_VOIDP
+
+#if ENABLE_HUGEHASH
+typedef st_index_t st_idx_t;
+#define SIZEOF_ST_IDX_T SIZEOF_VOIDP
+#else /* force 32bit indices and hash sum even on 64bit platform */
+typedef uint32_t st_idx_t;
+#define SIZEOF_ST_IDX_T SIZEOF_UINT32_T
+#endif
 
 struct st_hash_type {
     int (*compare)(ANYARGS /*st_data_t, st_data_t*/); /* st_compare_func* */
@@ -77,30 +82,20 @@ struct st_hash_type {
 # define ST_DATA_COMPATIBLE_P(type) 0
 #endif
 
-typedef struct st_table_entry st_table_entry;
-
-struct st_table_entry; /* defined in st.c */
-
 struct st_table {
-    /* Cached features of the table -- see st.c for more details.  */
-    unsigned char entry_power, bin_power, size_ind;
-    /* True when we are rebuilding the table.  */
-    unsigned char inside_rebuild_p;
-    /* How many times the table was rebuilt.  */
-    unsigned int rebuilds_num;
-    /* Currently used hash function.  */
-    st_index_t (*curr_hash)(ANYARGS /*st_data_t*/);
     const struct st_hash_type *type;
-    /* Number of entries currently in the table.  */
-    st_index_t num_entries;
-    /* Array of bins used for access by keys.  */
-    st_index_t *bins;
-    /* Start and bound index of entries in array entries.
-       entries_starts and entries_bound are in interval
-       [0,allocated_entries].  */
-    st_index_t entries_start, entries_bound;
-    /* Array of size 2^entry_power.  */
-    st_table_entry *entries;
+    union {
+	struct st_table_entry* entries;
+	st_idx_t* bins;
+	uint8_t*  bins8;
+	uint16_t* bins16;
+	uint32_t* bins32;
+    } as;
+    st_idx_t num_entries;
+    st_idx_t first, last;
+    unsigned sz : 8;
+    unsigned use_strong: 1;
+    st_idx_t rebuild_num : sizeof(st_idx_t)*8-9;
 };
 
 #define st_is_member(table,key) st_lookup((table),(key),(st_data_t *)0)
@@ -138,6 +133,7 @@ void st_free_table(st_table *);
 void st_cleanup_safe(st_table *, st_data_t);
 void st_clear(st_table *);
 st_table *st_copy(st_table *);
+void st_recalc_hashvals(st_table*);
 CONSTFUNC(int st_numcmp(st_data_t, st_data_t));
 CONSTFUNC(st_index_t st_numhash(st_data_t));
 PUREFUNC(int st_locale_insensitive_strcasecmp(const char *s1, const char *s2));

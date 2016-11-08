@@ -145,19 +145,14 @@ rb_hash(VALUE obj)
 
 long rb_objid_hash(st_index_t index);
 
-#if SIZEOF_INT == SIZEOF_VOIDP
-static const st_index_t str_seed = 0xfa835867;
-#else
-static const st_index_t str_seed = 0xc42b5e2e6480b23bULL;
-#endif
-
-static inline st_index_t
-any_hash_general(VALUE a, int strong_p, st_index_t (*other_func)(VALUE))
+static st_index_t
+any_hash(VALUE a, st_index_t (*other_func)(VALUE), int strong)
 {
     VALUE hval;
     st_index_t hnum;
 
     if (SPECIAL_CONST_P(a)) {
+	if (a == Qundef) return 0;
 	if (STATIC_SYM_P(a)) {
 	    hnum = a >> (RUBY_SPECIAL_SHIFT + ID_SCOPE_SHIFT);
 	    goto out;
@@ -169,16 +164,19 @@ any_hash_general(VALUE a, int strong_p, st_index_t (*other_func)(VALUE))
 	hnum = rb_objid_hash((st_index_t)a);
     }
     else if (BUILTIN_TYPE(a) == T_STRING) {
-	hnum = (strong_p
-		? rb_str_hash(a)
-		: st_hash(RSTRING_PTR(a), RSTRING_LEN(a), str_seed));
+	hnum = strong ? rb_str_hash(a) :
+		st_hash(RSTRING_PTR(a), RSTRING_LEN(a), 0xcafe);
     }
     else if (BUILTIN_TYPE(a) == T_SYMBOL) {
 	hnum = RSYMBOL(a)->hashval;
     }
     else if (BUILTIN_TYPE(a) == T_BIGNUM) {
-	hval = rb_big_hash(a);
-	hnum = FIX2LONG(hval);
+	if (strong) {
+	    hval = rb_big_hash(a);
+	    hnum = FIX2LONG(hval);
+	} else {
+	    hnum = rb_big_hash_long(a);
+	}
     }
     else if (BUILTIN_TYPE(a) == T_FLOAT) {
       flt:
@@ -199,24 +197,16 @@ obj_any_hash(VALUE obj)
     return FIX2LONG(obj);
 }
 
-static inline st_index_t
-any_hash_weak(VALUE a, st_index_t (*other_func)(VALUE)) {
-    return any_hash_general(a, FALSE, other_func);
+static st_index_t
+rb_any_hash(VALUE a)
+{
+    return any_hash(a, obj_any_hash, 1);
 }
 
 static st_index_t
-rb_any_hash_weak(VALUE a) {
-    return any_hash_weak(a, obj_any_hash);
-}
-
-static inline st_index_t
-any_hash(VALUE a, st_index_t (*other_func)(VALUE)) {
-    return any_hash_general(a, TRUE, other_func);
-}
-
-static st_index_t
-rb_any_hash(VALUE a) {
-    return any_hash(a, obj_any_hash);
+rb_any_hash_weak(VALUE a)
+{
+    return any_hash(a, obj_any_hash, 0);
 }
 
 st_index_t
@@ -253,7 +243,7 @@ objid_hash(VALUE obj)
 VALUE
 rb_obj_hash(VALUE obj)
 {
-    st_index_t hnum = any_hash(obj, objid_hash);
+    st_index_t hnum = any_hash(obj, objid_hash, 1);
     return ST2FIX(hnum);
 }
 
@@ -736,20 +726,6 @@ rb_hash_s_try_convert(VALUE dummy, VALUE hash)
     return rb_check_hash_type(hash);
 }
 
-struct rehash_arg {
-    VALUE hash;
-    st_table *tbl;
-};
-
-static int
-rb_hash_rehash_i(VALUE key, VALUE value, VALUE arg)
-{
-    st_table *tbl = (st_table *)arg;
-
-    st_insert(tbl, (st_data_t)key, (st_data_t)value);
-    return ST_CONTINUE;
-}
-
 /*
  *  call-seq:
  *     hsh.rehash -> hsh
@@ -783,10 +759,9 @@ rb_hash_rehash(VALUE hash)
     if (!RHASH(hash)->ntbl)
         return hash;
     tmp = hash_alloc(0);
-    tbl = st_init_table_with_size(RHASH(hash)->ntbl->type, RHASH(hash)->ntbl->num_entries);
+    tbl = st_copy(RHASH(hash)->ntbl);
     RHASH(tmp)->ntbl = tbl;
-
-    rb_hash_foreach(hash, rb_hash_rehash_i, (VALUE)tbl);
+    st_recalc_hashvals(tbl);
     st_free_table(RHASH(hash)->ntbl);
     RHASH(hash)->ntbl = tbl;
     RHASH(tmp)->ntbl = 0;
@@ -2568,6 +2543,7 @@ rb_hash_assoc(VALUE hash, VALUE key)
 
 	assochash.compare = assoc_cmp;
 	assochash.hash = orighash->hash;
+	assochash.strong_hash = orighash->strong_hash;
 	table->type = &assochash;
 	args[0] = hash;
 	args[1] = key;

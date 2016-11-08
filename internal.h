@@ -894,6 +894,7 @@ extern const char ruby_digitmap[];
 VALUE rb_big_fdiv(VALUE x, VALUE y);
 VALUE rb_big_uminus(VALUE x);
 VALUE rb_big_hash(VALUE);
+long  rb_big_hash_long(VALUE);
 VALUE rb_big_odd_p(VALUE);
 VALUE rb_big_even_p(VALUE);
 size_t rb_big_size(VALUE);
@@ -1429,6 +1430,7 @@ VALUE rb_enc_str_scrub(rb_encoding *enc, VALUE str, VALUE repl);
 #define is_ascii_string(str) (rb_enc_str_coderange(str) == ENC_CODERANGE_7BIT)
 #define is_broken_string(str) (rb_enc_str_coderange(str) == ENC_CODERANGE_BROKEN)
 size_t rb_str_memsize(VALUE);
+st_index_t rb_str_hash_weak(VALUE);
 VALUE rb_sym_proc_call(ID mid, int argc, const VALUE *argv, VALUE passed_proc);
 VALUE rb_sym_to_proc(VALUE sym);
 
