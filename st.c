@@ -436,8 +436,8 @@ EQUAL(const st_table *table, st_data_t key, const st_table_entry* ptr) {
 
 /* Find Loop */
 #define FL_INIT(hash) st_idx_t flpos = (st_idx_t)(hash), fldlt = 1; \
-		      st_index_t flmix = ROTL((hash), 17)
-#define FL_INC() (flpos += fldlt++), (fldlt += (st_idx_t)(flmix >>= 7))
+		      st_index_t flmix = (hash)
+#define FL_INC() (flpos += fldlt++), (fldlt += (st_idx_t)(flmix >>= 8))
 #define FL_POS(table) ((flpos) & (st_sz[(table)->sz].nbins-1))
 
 static inline st_table_entry*
