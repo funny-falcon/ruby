@@ -114,12 +114,13 @@ hash_table_index(struct rb_id_table* tbl, id_key_t key)
     if (tbl->capa > 0) {
 	int mask = tbl->capa - 1;
 	int ix = key & mask;
+	id_key_t mix = tbl->capa > 64 ? key : 0;
 	int d = 1;
 	while (key != ITEM_GET_KEY(tbl, ix)) {
 	    if (!ITEM_COLLIDED(tbl, ix))
 		return -1;
 	    ix = (ix + d) & mask;
-	    d++;
+	    d += 1 + (mix >>= 7);
 	}
 	return ix;
     }
@@ -131,6 +132,7 @@ hash_table_raw_insert(struct rb_id_table *tbl, id_key_t key, VALUE val)
 {
     int mask = tbl->capa - 1;
     int ix = key & mask;
+    id_key_t mix = tbl->capa > 64 ? key : 0;
     int d = 1;
 #if ID_TABLE_DEBUG
     assert(key > 0);
@@ -138,7 +140,7 @@ hash_table_raw_insert(struct rb_id_table *tbl, id_key_t key, VALUE val)
     while (ITEM_KEY_ISSET(tbl, ix)) {
 	ITEM_SET_COLLIDED(tbl, ix);
 	ix = (ix + d) & mask;
-	d++;
+	d += 1 + (mix >>= 7);
     }
     tbl->num++;
     if (!ITEM_COLLIDED(tbl, ix)) {
