@@ -6,11 +6,6 @@
 #define ID_TABLE_DEBUG 0
 #endif
 
-#if ID_TABLE_DEBUG == 0
-#define NDEBUG
-#endif
-#include "ruby_assert.h"
-
 typedef rb_id_serial_t id_key_t;
 
 static inline ID
@@ -29,42 +24,30 @@ id2key(ID id)
    uses mark-bit on collisions - need extra 1 bit,
    ID is strictly 3 bits larger than rb_id_serial_t */
 
-typedef struct rb_id_item {
-    id_key_t key;
-#if SIZEOF_VALUE == 8
-    int      collision;
-#endif
-    VALUE    val;
-} item_t;
-
 struct rb_id_table {
     int capa;
     int num;
     int used;
-    item_t *items;
+    id_key_t *keys;
 };
 
-#if SIZEOF_VALUE == 8
-#define ITEM_GET_KEY(tbl, i) ((tbl)->items[i].key)
-#define ITEM_KEY_ISSET(tbl, i) ((tbl)->items[i].key)
-#define ITEM_COLLIDED(tbl, i) ((tbl)->items[i].collision)
-#define ITEM_SET_COLLIDED(tbl, i) ((tbl)->items[i].collision = 1)
+#define ITEM_GET_KEY(tbl, i) ((tbl)->keys[i] >> 1)
+#define ITEM_KEY_ISSET(tbl, i) ((tbl)->keys[i] > 1)
+#define ITEM_COLLIDED(tbl, i) ((tbl)->keys[i] & 1)
+#define ITEM_SET_COLLIDED(tbl, i) ((tbl)->keys[i] |= 1)
 static inline void
 ITEM_SET_KEY(struct rb_id_table *tbl, int i, id_key_t key)
 {
-    tbl->items[i].key = key;
+    tbl->keys[i] = (key << 1) | ITEM_COLLIDED(tbl, i);
 }
-#else
-#define ITEM_GET_KEY(tbl, i) ((tbl)->items[i].key >> 1)
-#define ITEM_KEY_ISSET(tbl, i) ((tbl)->items[i].key > 1)
-#define ITEM_COLLIDED(tbl, i) ((tbl)->items[i].key & 1)
-#define ITEM_SET_COLLIDED(tbl, i) ((tbl)->items[i].key |= 1)
+#define ID_TABLE_VALUES(tbl) ((VALUE*)((tbl)->keys+(tbl)->capa))
+#define ITEM_GET_VALUE(tbl, i) (ID_TABLE_VALUES(tbl)[i])
 static inline void
-ITEM_SET_KEY(struct rb_id_table *tbl, int i, id_key_t key)
+ITEM_SET_VALUE(struct rb_id_table *tbl, int i, VALUE val)
 {
-    tbl->items[i].key = (key << 1) | ITEM_COLLIDED(tbl, i);
+    ID_TABLE_VALUES(tbl)[i] = val;
 }
-#endif
+#define ITEM_SIZE (sizeof(id_key_t) + sizeof(VALUE))
 
 static inline int
 round_capa(int capa)
@@ -86,7 +69,7 @@ rb_id_table_init(struct rb_id_table *tbl, int capa)
     if (capa > 0) {
 	capa = round_capa(capa);
 	tbl->capa = (int)capa;
-	tbl->items = ZALLOC_N(item_t, capa);
+	tbl->keys = (id_key_t*)ruby_xcalloc(capa, ITEM_SIZE);
     }
     return tbl;
 }
@@ -101,7 +84,7 @@ rb_id_table_create(size_t capa)
 void
 rb_id_table_free(struct rb_id_table *tbl)
 {
-    xfree(tbl->items);
+    xfree(tbl->keys);
     xfree(tbl);
 }
 
@@ -110,7 +93,7 @@ rb_id_table_clear(struct rb_id_table *tbl)
 {
     tbl->num = 0;
     tbl->used = 0;
-    MEMZERO(tbl->items, item_t, tbl->capa);
+    memset(tbl->keys, 0, tbl->capa * ITEM_SIZE);
 }
 
 size_t
@@ -122,7 +105,7 @@ rb_id_table_size(const struct rb_id_table *tbl)
 size_t
 rb_id_table_memsize(const struct rb_id_table *tbl)
 {
-    return sizeof(item_t) * tbl->capa + sizeof(struct rb_id_table);
+    return ITEM_SIZE * (size_t)tbl->capa + sizeof(struct rb_id_table);
 }
 
 static int
@@ -149,7 +132,9 @@ hash_table_raw_insert(struct rb_id_table *tbl, id_key_t key, VALUE val)
     int mask = tbl->capa - 1;
     int ix = key & mask;
     int d = 1;
-    assert(key != 0);
+#if ID_TABLE_DEBUG
+    assert(key > 0);
+#endif
     while (ITEM_KEY_ISSET(tbl, ix)) {
 	ITEM_SET_COLLIDED(tbl, ix);
 	ix = (ix + d) & mask;
@@ -160,7 +145,7 @@ hash_table_raw_insert(struct rb_id_table *tbl, id_key_t key, VALUE val)
 	tbl->used++;
     }
     ITEM_SET_KEY(tbl, ix, key);
-    tbl->items[ix].val = val;
+    ITEM_SET_VALUE(tbl, ix, val);
 }
 
 static int
@@ -172,7 +157,7 @@ hash_delete_index(struct rb_id_table *tbl, int ix)
 	}
 	tbl->num--;
 	ITEM_SET_KEY(tbl, ix, 0);
-	tbl->items[ix].val = 0;
+	ITEM_SET_VALUE(tbl, ix, 0);
 	return TRUE;
     } else {
 	return FALSE;
@@ -182,23 +167,20 @@ hash_delete_index(struct rb_id_table *tbl, int ix)
 static void
 hash_table_extend(struct rb_id_table* tbl)
 {
+    /* fill rate 66% */
     if (tbl->used + (tbl->used >> 1) >= tbl->capa) {
-	int new_cap = round_capa(tbl->num + (tbl->num >> 1));
+	struct rb_id_table tmp_tbl;
 	int i;
-	item_t* old;
-	struct rb_id_table tmp_tbl = {0, 0, 0};
-	if (new_cap < tbl->capa) {
-	    new_cap = round_capa(tbl->used + (tbl->used >> 1));
-	}
-	tmp_tbl.capa = new_cap;
-	tmp_tbl.items = ZALLOC_N(item_t, new_cap);
+	id_key_t* old;
+	VALUE* values = ID_TABLE_VALUES(tbl);
+	rb_id_table_init(&tmp_tbl, tbl->num + (tbl->num >> 1) + 1);
 	for (i = 0; i < tbl->capa; i++) {
 	    id_key_t key = ITEM_GET_KEY(tbl, i);
 	    if (key != 0) {
-		hash_table_raw_insert(&tmp_tbl, key, tbl->items[i].val);
+		hash_table_raw_insert(&tmp_tbl, key, values[i]);
 	    }
 	}
-	old = tbl->items;
+	old = tbl->keys;
 	*tbl = tmp_tbl;
 	xfree(old);
     }
@@ -228,7 +210,7 @@ rb_id_table_lookup(struct rb_id_table *tbl, ID id, VALUE *valp)
     int index = hash_table_index(tbl, key);
 
     if (index >= 0) {
-	*valp = tbl->items[index].val;
+	*valp = ITEM_GET_VALUE(tbl, index);
 	return TRUE;
     }
     else {
@@ -242,7 +224,7 @@ rb_id_table_insert_key(struct rb_id_table *tbl, const id_key_t key, const VALUE 
     const int index = hash_table_index(tbl, key);
 
     if (index >= 0) {
-	tbl->items[index].val = val;
+	ITEM_SET_VALUE(tbl, index, val);
     }
     else {
 	hash_table_extend(tbl);
@@ -273,8 +255,8 @@ rb_id_table_foreach(struct rb_id_table *tbl, rb_id_table_foreach_func_t *func, v
     for (i=0; i<capa; i++) {
 	if (ITEM_KEY_ISSET(tbl, i)) {
 	    const id_key_t key = ITEM_GET_KEY(tbl, i);
-	    enum rb_id_table_iterator_result ret = (*func)(key2id(key), tbl->items[i].val, data);
-	    assert(key != 0);
+	    const VALUE val = ITEM_GET_VALUE(tbl, i);
+	    enum rb_id_table_iterator_result ret = (*func)(key2id(key), val, data);
 
 	    if (ret == ID_TABLE_DELETE)
 		hash_delete_index(tbl, i);
@@ -291,7 +273,8 @@ rb_id_table_foreach_values(struct rb_id_table *tbl, rb_id_table_foreach_values_f
 
     for (i=0; i<capa; i++) {
 	if (ITEM_KEY_ISSET(tbl, i)) {
-	    enum rb_id_table_iterator_result ret = (*func)(tbl->items[i].val, data);
+	    const VALUE val = ITEM_GET_VALUE(tbl, i);
+	    enum rb_id_table_iterator_result ret = (*func)(val, data);
 
 	    if (ret == ID_TABLE_DELETE)
 		hash_delete_index(tbl, i);

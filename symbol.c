@@ -14,6 +14,7 @@
 #include "symbol.h"
 #include "gc.h"
 #include "probes.h"
+#include "ruby_assert.h"
 
 #ifndef SYMBOL_DEBUG
 # define SYMBOL_DEBUG 0
@@ -569,7 +570,13 @@ next_id_base(void)
 {
     rb_id_serial_t next_serial = global_symbols.last_id + 1;
 
-    if (next_serial == 0) {
+    if (sizeof(next_serial) >= sizeof(ID) &&
+	    next_serial >= (rb_id_serial_t)(~(ID)0 >> (ID_SCOPE_SHIFT + RUBY_SPECIAL_SHIFT))) {
+	return (ID)-1;
+    }
+    /* need at lest 1 bit for collision mark in id_table */
+    else if (sizeof(next_serial) < sizeof(ID) &&
+	    next_serial >= ~(rb_id_serial_t)0 >> 1) {
 	return (ID)-1;
     }
     else {
@@ -708,6 +715,13 @@ rb_sym2id(VALUE sym)
 	    VALUE fstr = RSYMBOL(sym)->fstr;
 	    ID num = next_id_base();
 
+	    if (num == (ID)-1) {
+		fstr = rb_str_ellipsize(fstr, 20);
+		rb_raise(rb_eRuntimeError,
+				"symbol table overflow (symbol %"PRIsVALUE")",
+				fstr);
+	    }
+
 	    RSYMBOL(sym)->id = id |= num;
 	    /* make it permanent object */
 	    set_id_entry(rb_id_to_serial(num), fstr, sym);
@@ -767,7 +781,11 @@ rb_id2name(ID id)
 ID
 rb_make_internal_id(void)
 {
-    return next_id_base() | ID_INTERNAL | ID_STATIC_SYM;
+    ID nid = next_id_base();
+    /* make_internal_id called very rarely during initialization,
+     * so don't bother with exception */
+    assert(nid != (ID)-1);
+    return nid | ID_INTERNAL | ID_STATIC_SYM;
 }
 
 static int
